@@ -137,7 +137,9 @@ mod tests {
             edges: vec![Edge {
                 from: "when".into(),
                 to: "then".into(),
+                output: None,
             }],
+            positions: Default::default(),
         };
         save(&format!("http://{address}"), "test-token", &workflow)
             .await

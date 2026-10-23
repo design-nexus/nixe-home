@@ -1,3 +1,4 @@
+use futures_util::future::{BoxFuture, join_all};
 use nixe_home::automation::{BUS, DryRunContext, NodeKind, Owner, PATH, Workflow};
 use rusqlite::{Connection, params};
 use std::{
@@ -79,7 +80,7 @@ impl Engine {
         if !workflow.enabled {
             return Err("Workflow is disabled".into());
         }
-        let order = workflow.validate()?;
+        workflow.validate()?;
         {
             let mut running = self.running.lock().unwrap();
             if !running.insert(workflow.id.clone()) {
@@ -102,42 +103,14 @@ impl Engine {
         let engine = self.clone();
         let returned_id = run_id.clone();
         tokio::spawn(async move {
-            let mut detail = Vec::new();
-            let mut status = "completed";
-            for id in order.iter().skip(1) {
-                let node = workflow.nodes.iter().find(|n| &n.id == id).unwrap();
-                if let NodeKind::AppRunning { class } = &node.kind {
-                    match app_running(class).await {
-                        Ok(true) => {
-                            detail.push(format!("{}: condition true", node.id));
-                            continue;
-                        }
-                        Ok(false) => {
-                            detail.push(format!("{}: condition false", node.id));
-                            status = "skipped";
-                            break;
-                        }
-                        Err(e) => {
-                            detail.push(format!("{}: condition unavailable ({e})", node.id));
-                            status = "failed";
-                            break;
-                        }
-                    }
-                }
-                match tokio::time::timeout(Duration::from_secs(10), execute(&node.kind)).await {
-                    Ok(Ok(())) => detail.push(format!("{}: completed", node.id)),
-                    Ok(Err(e)) => {
-                        detail.push(format!("{}: {}", node.id, e));
-                        status = "failed";
-                        break;
-                    }
-                    Err(_) => {
-                        detail.push(format!("{}: timed out", node.id));
-                        status = "failed";
-                        break;
-                    }
-                }
-            }
+            let trigger_id = workflow
+                .nodes
+                .iter()
+                .find(|n| n.kind.is_trigger())
+                .unwrap()
+                .id
+                .clone();
+            let (status, detail) = run_path(&workflow, &trigger_id).await;
             if let Ok(db) = engine.open() {
                 let _ = db.execute(
                     "UPDATE runs SET finished_at=?2,status=?3,detail=?4 WHERE id=?1",
@@ -149,6 +122,72 @@ impl Engine {
         });
         Ok(returned_id)
     }
+}
+
+fn run_path<'a>(workflow: &'a Workflow, id: &'a str) -> BoxFuture<'a, (&'static str, Vec<String>)> {
+    Box::pin(async move {
+        let node = workflow.nodes.iter().find(|n| n.id == id).unwrap();
+        let mut detail = Vec::new();
+        let mut chosen: Option<&str> = None;
+        match &node.kind {
+            kind if kind.is_trigger() => {}
+            NodeKind::AppRunning { class } | NodeKind::BranchAppRunning { class } => {
+                match app_running(class).await {
+                    Ok(value) => {
+                        detail.push(format!("{}: condition {}", id, value));
+                        if matches!(node.kind, NodeKind::BranchAppRunning { .. }) {
+                            chosen = Some(if value { "true" } else { "false" });
+                        } else if !value {
+                            return ("skipped", detail);
+                        }
+                    }
+                    Err(_) => {
+                        detail.push(format!("{}: condition unavailable", id));
+                        return ("failed", detail);
+                    }
+                }
+            }
+            NodeKind::Parallel | NodeKind::Stop => {}
+            NodeKind::Delay { seconds } => {
+                tokio::time::sleep(Duration::from_secs(*seconds)).await;
+                detail.push(format!("{}: completed", id));
+            }
+            _ => match tokio::time::timeout(Duration::from_secs(10), execute(&node.kind)).await {
+                Ok(Ok(())) => detail.push(format!("{}: completed", id)),
+                Ok(Err(e)) => {
+                    detail.push(format!("{}: {}", id, e));
+                    return ("failed", detail);
+                }
+                Err(_) => {
+                    detail.push(format!("{}: timed out", id));
+                    return ("failed", detail);
+                }
+            },
+        }
+        let edges: Vec<_> = workflow
+            .edges
+            .iter()
+            .filter(|e| e.from == id && chosen.is_none_or(|port| e.output.as_deref() == Some(port)))
+            .collect();
+        let results = join_all(edges.iter().map(|edge| run_path(workflow, &edge.to))).await;
+        let mut failed = false;
+        let mut all_skipped = !results.is_empty();
+        for (child_status, child_detail) in results {
+            if child_status == "failed" {
+                failed = true;
+            }
+            all_skipped &= child_status == "skipped";
+            detail.extend(child_detail);
+        }
+        let status = if failed {
+            "failed"
+        } else if all_skipped {
+            "skipped"
+        } else {
+            "completed"
+        };
+        (status, detail)
+    })
 }
 
 async fn app_running(class: &str) -> Result<bool> {

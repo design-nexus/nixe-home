@@ -638,6 +638,7 @@ pub fn present(
                 .map(|i| Edge {
                     from: nodes[i - 1].id.clone(),
                     to: nodes[i].id.clone(),
+                    output: None,
                 })
                 .collect();
             let workflow = Workflow {
@@ -651,6 +652,7 @@ pub fn present(
                 owner,
                 nodes,
                 edges,
+                positions: HashMap::new(),
             };
             workflow.validate()?;
             if owner == Owner::HomeAssistant && (home.base.is_empty() || home.token.is_empty()) {

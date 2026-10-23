@@ -22,9 +22,11 @@ the smart-home backend.
   triggers include manual, startup, intervals, and Hyprland window open/close;
   actions include notifications, desktop application launch, workspace switching,
   and volume.
+- Edit desktop graphs on a native GTK canvas with drag, pan, zoom, node inspector,
+  connections, auto layout, undo/redo, and dry-run path highlighting. Desktop
+  graphs can branch on an application, run parallel paths, delay, and stop.
 
-The current build does not yet support cameras, robot controls, the advanced node
-canvas, or hybrid workflows.
+The current build does not yet support cameras, robot controls, or hybrid workflows.
 OAuth is deferred until the app has a registered website redirect. See
 [the architecture notes](docs/ARCHITECTURE.md).
 
@@ -68,6 +70,11 @@ The workflow file has `schema_version`, `id`, `name`, `enabled`, `nodes`, and `e
 Each node has an `id` and a `type`; edges connect `from` to `to`. The simple builder supports
 one trigger, an optional condition, and a linear chain of actions. Workflow validation rejects
 unknown node types, unsafe application IDs, cycles, and disconnected nodes.
+Open **Canvas** on an automation to edit its graph. For a new graph, choose
+**Advanced canvas**. Select a node, use **Connect to node…**, then click the target.
+For a branch, the first connection is `true` and the second is `false`; remove
+an output in the inspector to rewire it. The inspector edits node parameters.
+Saved canvas positions are optional JSON metadata; the daemon ignores them.
 
 The service runs as the current user with no root privileges. It only invokes
 allowlisted commands with separate arguments, enforces action timeouts, and records

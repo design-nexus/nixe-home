@@ -17,6 +17,14 @@ pub struct Workflow {
     pub owner: Owner,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub positions: HashMap<String, Point>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +59,10 @@ pub enum NodeKind {
     LaunchApplication { desktop_id: String },
     SetEntity { entity_id: String, turn_on: bool },
     ActivateScene { entity_id: String },
+    BranchAppRunning { class: String },
+    Parallel,
+    Delay { seconds: u64 },
+    Stop,
 }
 
 impl NodeKind {
@@ -75,6 +87,8 @@ impl NodeKind {
 pub struct Edge {
     pub from: String,
     pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -125,8 +139,13 @@ impl Workflow {
                 {
                     return Err("Window class is required".into());
                 }
-                NodeKind::AppRunning { class } if class.trim().is_empty() || class.len() > 128 => {
+                NodeKind::AppRunning { class } | NodeKind::BranchAppRunning { class }
+                    if class.trim().is_empty() || class.len() > 128 =>
+                {
                     return Err("Application class is required".into());
+                }
+                NodeKind::Delay { seconds } if !(1..=3600).contains(seconds) => {
+                    return Err("Delay must be 1–3600 seconds".into());
                 }
                 NodeKind::EntityState { entity_id, state }
                 | NodeKind::EntityIs { entity_id, state }
@@ -176,24 +195,28 @@ impl Workflow {
         for id in &ids {
             graph.add_node(id);
         }
-        let mut next = HashMap::new();
+        let mut next: HashMap<&str, Vec<&Edge>> = HashMap::new();
         let mut incoming = HashSet::new();
         for edge in &self.edges {
             if !ids.contains(edge.from.as_str())
                 || !ids.contains(edge.to.as_str())
-                || next.insert(edge.from.as_str(), edge.to.as_str()).is_some()
                 || !incoming.insert(edge.to.as_str())
             {
-                return Err("Edges must form one connected path".into());
+                return Err("Each node needs one incoming edge, except the trigger".into());
             }
+            next.entry(&edge.from).or_default().push(edge);
             graph.add_edge(edge.from.as_str(), edge.to.as_str(), ());
         }
         if is_cyclic_directed(&graph) || incoming.contains(trigger.as_str()) {
             return Err("Workflow contains a cycle or edge into its trigger".into());
         }
-        let mut order = vec![trigger.clone()];
-        while let Some(to) = next.get(order.last().unwrap().as_str()) {
-            order.push((*to).to_string());
+        let mut order = Vec::new();
+        let mut pending = vec![trigger.clone()];
+        while let Some(id) = pending.pop() {
+            for edge in next.get(id.as_str()).into_iter().flatten().rev() {
+                pending.push(edge.to.clone());
+            }
+            order.push(id);
         }
         if order.len() != self.nodes.len()
             || order
@@ -206,14 +229,36 @@ impl Workflow {
         let mut actions = 0;
         for (index, id) in order.iter().enumerate() {
             let kind = kinds[id.as_str()];
+            let outgoing = next.get(id.as_str()).map_or(&[][..], Vec::as_slice);
+            match kind {
+                NodeKind::BranchAppRunning { .. }
+                    if outgoing.len() == 2
+                        && outgoing.iter().any(|e| e.output.as_deref() == Some("true"))
+                        && outgoing
+                            .iter()
+                            .any(|e| e.output.as_deref() == Some("false")) => {}
+                NodeKind::BranchAppRunning { .. } => {
+                    return Err("Branch needs true and false outputs".into());
+                }
+                NodeKind::Parallel
+                    if outgoing.len() >= 2 && outgoing.iter().all(|e| e.output.is_none()) => {}
+                NodeKind::Parallel => return Err("Parallel needs at least two outputs".into()),
+                NodeKind::Stop if outgoing.is_empty() => {}
+                NodeKind::Stop => return Err("Stop cannot have outgoing edges".into()),
+                _ if outgoing.len() <= 1 && outgoing.iter().all(|e| e.output.is_none()) => {}
+                _ => return Err("Only branch or parallel nodes may have multiple outputs".into()),
+            }
             if index == 0 {
                 continue;
             }
             if kind.is_condition() {
-                if actions > 0 {
+                if self.owner == Owner::HomeAssistant && actions > 0 {
                     return Err("Conditions must come before actions".into());
                 }
-            } else {
+            } else if !matches!(
+                kind,
+                NodeKind::BranchAppRunning { .. } | NodeKind::Parallel | NodeKind::Stop
+            ) {
                 actions += 1;
             }
             let allowed = match self.owner {
@@ -224,6 +269,10 @@ impl Workflow {
                         | NodeKind::SwitchWorkspace { .. }
                         | NodeKind::SetVolume { .. }
                         | NodeKind::LaunchApplication { .. }
+                        | NodeKind::BranchAppRunning { .. }
+                        | NodeKind::Parallel
+                        | NodeKind::Delay { .. }
+                        | NodeKind::Stop
                 ),
                 Owner::HomeAssistant => matches!(
                     kind,
@@ -239,6 +288,18 @@ impl Workflow {
         if actions == 0 {
             return Err("At least one action is required".into());
         }
+        if self.owner == Owner::HomeAssistant && self.edges.iter().any(|e| e.output.is_some()) {
+            return Err("Home Assistant workflow must be linear".into());
+        }
+        if self.positions.iter().any(|(id, p)| {
+            !ids.contains(id.as_str())
+                || !p.x.is_finite()
+                || !p.y.is_finite()
+                || p.x.abs() > 100_000.0
+                || p.y.abs() > 100_000.0
+        }) {
+            return Err("Canvas positions are invalid".into());
+        }
         let trigger_kind = kinds[trigger.as_str()];
         if (self.owner == Owner::Desktop && matches!(trigger_kind, NodeKind::EntityState { .. }))
             || (self.owner == Owner::HomeAssistant
@@ -253,6 +314,9 @@ impl Workflow {
         let order = self.validate()?;
         if self.owner != Owner::HomeAssistant {
             return Err("Workflow is desktop-owned".into());
+        }
+        if self.edges.iter().any(|e| e.output.is_some()) {
+            return Err("Home Assistant workflow must be linear".into());
         }
         let mut conditions = Vec::new();
         let mut actions = Vec::new();
@@ -288,43 +352,70 @@ impl Workflow {
         let order = self.validate()?;
         let mut steps = Vec::new();
         let mut warnings = Vec::new();
-        let mut skip = false;
+        let mut active = HashMap::new();
+        let trigger_id = order.first().unwrap().clone();
+        active.insert(trigger_id, true);
         for id in order {
             let kind = &self.nodes.iter().find(|n| n.id == id).unwrap().kind;
+            let is_active = active.get(&id).copied().unwrap_or(false);
+            let mut continue_path = is_active;
+            let mut chosen = None;
             let result = match kind {
+                _ if !is_active => "skipped".into(),
                 kind if kind.is_trigger() => "trigger simulated".to_string(),
-                NodeKind::AppRunning { class } => match &context.running_apps {
-                    Some(apps) if apps.iter().any(|app| app.eq_ignore_ascii_case(class)) => {
-                        "condition true".into()
+                NodeKind::AppRunning { class } | NodeKind::BranchAppRunning { class } => {
+                    match &context.running_apps {
+                        Some(apps) if apps.iter().any(|app| app.eq_ignore_ascii_case(class)) => {
+                            if matches!(kind, NodeKind::BranchAppRunning { .. }) {
+                                chosen = Some("true");
+                            }
+                            "condition true".into()
+                        }
+                        Some(_) => {
+                            if matches!(kind, NodeKind::BranchAppRunning { .. }) {
+                                chosen = Some("false");
+                            } else {
+                                continue_path = false;
+                            }
+                            "condition false".into()
+                        }
+                        None => {
+                            continue_path = false;
+                            warnings.push(
+                                "Current application list is unavailable in this dry run".into(),
+                            );
+                            "condition unknown".into()
+                        }
                     }
-                    Some(_) => {
-                        skip = true;
-                        "condition false".into()
-                    }
-                    None => {
-                        skip = true;
-                        warnings
-                            .push("Current application list is unavailable in this dry run".into());
-                        "condition unknown".into()
-                    }
-                },
+                }
                 NodeKind::EntityIs { entity_id, state } => {
                     match context.entity_states.get(entity_id) {
                         Some(actual) if actual == state => "condition true".into(),
                         Some(_) => {
-                            skip = true;
+                            continue_path = false;
                             "condition false".into()
                         }
                         None => {
-                            skip = true;
+                            continue_path = false;
                             warnings.push(format!("No current state for {entity_id}"));
                             "condition unknown".into()
                         }
                     }
                 }
-                _ if skip => "skipped".into(),
+                NodeKind::Parallel => "parallel paths planned".into(),
+                NodeKind::Stop => {
+                    continue_path = false;
+                    "stop".into()
+                }
+                NodeKind::Delay { seconds } => format!("planned delay: {seconds}s"),
                 _ => "planned action".into(),
             };
+            for edge in self.edges.iter().filter(|edge| edge.from == id) {
+                active.insert(
+                    edge.to.clone(),
+                    continue_path && chosen.is_none_or(|port| edge.output.as_deref() == Some(port)),
+                );
+            }
             steps.push(DryRunStep {
                 node_id: id,
                 result,
@@ -386,7 +477,9 @@ mod tests {
             edges: vec![Edge {
                 from: "trigger".into(),
                 to: "action".into(),
+                output: None,
             }],
+            positions: HashMap::new(),
         };
         let json = serde_json::to_string(&w).unwrap();
         let restored: Workflow = serde_json::from_str(&json).unwrap();
@@ -436,12 +529,15 @@ mod tests {
                 Edge {
                     from: "when".into(),
                     to: "if".into(),
+                    output: None,
                 },
                 Edge {
                     from: "if".into(),
                     to: "then".into(),
+                    output: None,
                 },
             ],
+            positions: HashMap::new(),
         };
         let config = w.to_home_assistant().unwrap();
         assert_eq!(config["actions"][0]["action"], "light.turn_on");
@@ -452,5 +548,90 @@ mod tests {
             })
             .unwrap();
         assert_eq!(report.steps[2].result, "skipped");
+    }
+
+    #[test]
+    fn branch_paths_validate_and_dry_run() {
+        let workflow = Workflow {
+            schema_version: 1,
+            id: "branch-test".into(),
+            name: "Branch".into(),
+            enabled: true,
+            owner: Owner::Desktop,
+            nodes: vec![
+                Node {
+                    id: "when".into(),
+                    kind: NodeKind::Manual,
+                },
+                Node {
+                    id: "branch".into(),
+                    kind: NodeKind::BranchAppRunning {
+                        class: "Game".into(),
+                    },
+                },
+                Node {
+                    id: "yes".into(),
+                    kind: NodeKind::Notify {
+                        title: "Yes".into(),
+                        body: String::new(),
+                    },
+                },
+                Node {
+                    id: "no".into(),
+                    kind: NodeKind::Notify {
+                        title: "No".into(),
+                        body: String::new(),
+                    },
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "when".into(),
+                    to: "branch".into(),
+                    output: None,
+                },
+                Edge {
+                    from: "branch".into(),
+                    to: "yes".into(),
+                    output: Some("true".into()),
+                },
+                Edge {
+                    from: "branch".into(),
+                    to: "no".into(),
+                    output: Some("false".into()),
+                },
+            ],
+            positions: HashMap::new(),
+        };
+        let restored: Workflow =
+            serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
+        restored.validate().unwrap();
+        let report = restored
+            .dry_run(&DryRunContext {
+                running_apps: Some(vec!["Game".into()]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            report
+                .steps
+                .iter()
+                .find(|s| s.node_id == "yes")
+                .unwrap()
+                .result,
+            "planned action"
+        );
+        assert_eq!(
+            report
+                .steps
+                .iter()
+                .find(|s| s.node_id == "no")
+                .unwrap()
+                .result,
+            "skipped"
+        );
+        let mut invalid = workflow;
+        invalid.edges[2].output = Some("true".into());
+        assert!(invalid.validate().is_err());
     }
 }

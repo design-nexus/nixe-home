@@ -59,9 +59,11 @@ are registered; do not send users to a fabricated or unregistered callback.
 - `nixe-homed` owns desktop workflow execution and stays running as a systemd user
   service after the window closes. It exposes `Automation1` on the session D-Bus.
 - Version 1 workflow JSON is shared by the GUI, CLI and daemon. Node and edge IDs
-  are stable. `petgraph` checks the graph before saving or executing. The current
-  runtime accepts a single trigger followed by a linear action chain; branching and
-  parallel execution will extend the schema and runtime in Phase 4.
+  are stable. `petgraph` checks the graph before saving or executing. Desktop
+  graphs are rooted trees: every nontrigger node has one incoming edge, and a
+  branch must have exactly one `true` and one `false` output. Parallel nodes
+  spawn child paths concurrently. A `Stop` node terminates its path. The tree
+  restriction avoids ambiguous joins and duplicate action execution.
 - SQLite stores workflows and run records under Nixe Home's XDG data directory.
   Running records are marked interrupted after daemon restart. Intervals do not
   replay missed runs after downtime. Per-workflow concurrent execution is blocked.
@@ -95,6 +97,23 @@ are registered; do not send users to a fabricated or unregistered callback.
   `trigger` service. Live test passes `skip_condition=false`. HA remains the
   execution owner and retains its own traces; local Activity covers desktop
   runs only.
+
+## Phase 4 graph editor foundation
+
+- The GTK DrawingArea renders nodes and Bezier connections with Cairo. Native
+  GTK controls provide node selection and parameter editing. Dragged positions
+  snap to a 12-pixel grid and persist in optional `positions` metadata; the
+  daemon validates positions but never uses them for execution.
+- The canvas shares canonical workflow JSON with the simple builder. A graph
+  the simple builder cannot represent opens a read-only notice there; canvas
+  edits preserve its graph. Dry run walks chosen branches, marks unchosen paths
+  skipped, and highlights results on the canvas.
+- `BranchAppRunning`, `Parallel`, `Delay`, and `Stop` are desktop-only node
+  types. The runtime traverses branches recursively and schedules parallel
+  child paths together. Action failure stops that path and marks the run failed.
+- Graphs remain capped at 64 nodes. The current editor does not yet provide
+  grouping, multi-selection, copy/paste, keyboard shortcuts, variables, retry,
+  timeout/error nodes, or live node-by-node progress.
 
 Home Assistant source references: [automation config endpoint](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/automation.py),
 [config view validation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/view.py),

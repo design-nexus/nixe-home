@@ -1,4 +1,5 @@
 mod builder;
+mod canvas;
 mod credentials;
 mod desktop_ui;
 mod ha;

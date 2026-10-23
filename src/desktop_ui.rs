@@ -1,6 +1,9 @@
-use crate::builder::{self, HomeContext};
+use crate::{
+    builder::{self, HomeContext},
+    canvas,
+};
 use gtk::prelude::*;
-use nixe_home::automation::{BUS, INTERFACE, Owner, PATH, Workflow};
+use nixe_home::automation::{BUS, Edge, INTERFACE, Node, NodeKind, Owner, PATH, Workflow};
 use std::rc::Rc;
 
 pub fn page(section: &str) -> gtk::Box {
@@ -186,11 +189,13 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
     create.append(&label("Build an automation with WHEN → IF → THEN"));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let desktop = gtk::Button::with_label("Desktop automation");
+    let advanced = gtk::Button::with_label("Advanced canvas");
     let home_button = gtk::Button::with_label("Home automation");
     home_button.set_sensitive(
         !home.base.is_empty() && !home.token.is_empty() && !home.entities.is_empty(),
     );
     row.append(&desktop);
+    row.append(&advanced);
     row.append(&home_button);
     create.append(&row);
     page.append(&create);
@@ -202,6 +207,37 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         let home = home.clone();
         button.connect_clicked(move |_| open_builder(&page, None, owner, home.clone()));
     }
+    let page_advanced = page.clone();
+    let home_advanced = home.clone();
+    advanced.connect_clicked(move |_| {
+        let workflow = Workflow {
+            schema_version: 1,
+            id: format!("home-{}", uuid::Uuid::new_v4().simple()),
+            name: "New desktop automation".into(),
+            enabled: true,
+            owner: Owner::Desktop,
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    kind: NodeKind::Manual,
+                },
+                Node {
+                    id: "action".into(),
+                    kind: NodeKind::Notify {
+                        title: "Home".into(),
+                        body: "Automation ran".into(),
+                    },
+                },
+            ],
+            edges: vec![Edge {
+                from: "trigger".into(),
+                to: "action".into(),
+                output: None,
+            }],
+            positions: Default::default(),
+        };
+        open_canvas(&page_advanced, workflow, home_advanced.clone());
+    });
     if workflows.is_empty() {
         page.append(&label("No automations yet."));
     }
@@ -221,12 +257,14 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         row.append(&name);
         let run = gtk::Button::with_label("Live test");
         let edit = gtk::Button::with_label("Edit");
+        let canvas_button = gtk::Button::with_label("Canvas");
         let toggle = gtk::Button::with_label(if is_enabled { "Disable" } else { "Enable" });
         run.set_sensitive(
             is_enabled && (workflow.owner == Owner::Desktop || !home.token.is_empty()),
         );
         row.append(&run);
         row.append(&edit);
+        row.append(&canvas_button);
         row.append(&toggle);
         box_.append(&row);
         box_.append(&label(&format!(
@@ -254,6 +292,12 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
                 edit_workflow.owner,
                 home_copy.clone(),
             )
+        });
+        let page_canvas = page.clone();
+        let home_canvas = home.clone();
+        let workflow_canvas = workflow.clone();
+        canvas_button.connect_clicked(move |_| {
+            open_canvas(&page_canvas, workflow_canvas.clone(), home_canvas.clone())
         });
         let id = workflow.id.clone();
         let page_copy = page.clone();
@@ -304,6 +348,20 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
             }
         });
     }
+}
+
+fn open_canvas(page: &gtk::Box, workflow: Workflow, home: HomeContext) {
+    let Some(parent) = page.root().and_then(|r| r.downcast::<gtk::Window>().ok()) else {
+        return;
+    };
+    let page_copy = page.clone();
+    let home_copy = home.clone();
+    canvas::present(
+        &parent,
+        workflow,
+        home,
+        Rc::new(move || refresh(page_copy.clone(), "automations", home_copy.clone())),
+    );
 }
 
 fn open_builder(page: &gtk::Box, workflow: Option<Workflow>, owner: Owner, home: HomeContext) {
