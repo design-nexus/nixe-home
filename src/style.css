@@ -1,0 +1,13 @@
+window.home-window {
+  font-family: "Inter", "Cantarell", sans-serif;
+  font-size: 13px;
+}
+window.home-window .technical { font-family: "JetBrains Mono", monospace; }
+window.home-window .home-sidebar { border-right: 1px solid @hairline; }
+window.home-window .home-nav { min-height: 38px; border-radius: 6px; margin: 2px 8px; }
+window.home-window .home-nav.active { background: @nav_active; color: @theme_accent; }
+window.home-window .home-content { padding: 20px; }
+window.home-window .home-card { border: 1px solid @hairline; border-radius: 10px; padding: 14px; }
+window.home-window .home-heading { font-size: 1.1em; font-weight: 600; }
+window.home-window .home-muted { color: @theme_dim_text; }
+window.home-window .home-error { color: @theme_danger; }
