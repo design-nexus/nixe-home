@@ -409,8 +409,6 @@ fn start_connection(ui: &Rc<RefCell<Ui>>, base: String, token: String) {
                         cancel_rx.clone(),
                         metadata,
                     );
-                    // Keep the receive owner alive while the independent socket worker sends updates.
-                    std::future::pending::<()>().await;
                 }
                 Err(error) => {
                     let _ = sender.send(Update::Status(error)).await;
