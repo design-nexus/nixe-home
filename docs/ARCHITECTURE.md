@@ -71,5 +71,31 @@ are registered; do not send users to a fabricated or unregistered callback.
   validated. External processes have 10-second timeouts. Scripts and imported shell
   commands have no execution path.
 - The app queries the service off the GTK thread. The Automations page offers one
-  useful starter template; the full When / If / Then editor belongs to Phase 3.
+  native When / If / Then builder.
   Home Assistant remains authoritative for home-only automation.
+
+## Phase 3 builder and routing
+
+- `Workflow.owner` defaults to `desktop`, preserving Phase 2 JSON. The daemon
+  rejects live execution of `home_assistant` workflows. The same node/edge
+  representation underlies both owners and the builder.
+- The builder validates before save, preserves compatible node IDs on edits, and
+  shows a read-only summary for graphs it cannot represent. Dry run evaluates
+  supplied Home Assistant state and lists planned or skipped actions without
+  invoking services. An unavailable application list yields an unknown condition
+  warning rather than a false result.
+- The supported Home Assistant subset compiles to a state trigger, optional
+  state condition, and on/off or scene actions. The app posts the compiled config
+  to HA's validated `/api/config/automation/config/{id}` endpoint, then mirrors
+  the Nixe graph in the local service. HA requires administrator access for this
+  endpoint. On a local mirror failure after HA accepts the config, the UI reports
+  the error; the automation may already exist in HA.
+- HA enable/disable and live test resolve the automation entity through its
+  state capability `id`, then call HA's `automation.turn_on`, `turn_off`, or
+  `trigger` service. Live test passes `skip_condition=false`. HA remains the
+  execution owner and retains its own traces; local Activity covers desktop
+  runs only.
+
+Home Assistant source references: [automation config endpoint](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/automation.py),
+[config view validation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/view.py),
+[automation services](https://github.com/home-assistant/core/blob/dev/homeassistant/components/automation/services.py).

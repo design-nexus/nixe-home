@@ -1,6 +1,8 @@
+mod builder;
 mod credentials;
 mod desktop_ui;
 mod ha;
+mod ha_automation;
 mod prefs;
 mod theme;
 mod window;

@@ -14,15 +14,17 @@ the smart-home backend.
 - Pin devices to Overview and use basic controls for lights, switches, fans, input
   booleans, and locks.
 - Run desktop automations from a systemd user service, independently of the window.
-- Create a window-open notification automation in the Automations page; enable,
-  disable, and run saved workflows there. Review run results in Activity.
+- Build desktop or Home Assistant automations with a native WHEN → IF → THEN
+  editor. Add multiple actions, edit saved workflows, dry run, and live test.
+  Enable or disable workflows from the Automations page and review desktop run
+  results in Activity.
 - Store versioned desktop workflows and execution history in SQLite. Supported
   triggers include manual, startup, intervals, and Hyprland window open/close;
   actions include notifications, desktop application launch, workspace switching,
   and volume.
 
-The current build does not yet support cameras, robot controls, the full graphical
-automation editor, or hybrid workflows.
+The current build does not yet support cameras, robot controls, the advanced node
+canvas, or hybrid workflows.
 OAuth is deferred until the app has a registered website redirect. See
 [the architecture notes](docs/ARCHITECTURE.md).
 
@@ -51,15 +53,20 @@ and service permissions remain managed by Home Assistant.
 
 ## Desktop automations
 
-The Automations page provides a quick window-open notification template. The service
-also accepts versioned workflow JSON through `nixe-homectl save FILE` for supported
+The Automations page provides desktop and Home Assistant builders. Home Assistant
+automations currently support an entity state trigger, an optional entity state
+condition, and on/off or scene actions. Home Assistant executes these workflows;
+the desktop service keeps their editable Nixe graph but never runs them.
+
+The service also accepts versioned desktop workflow JSON through `nixe-homectl save FILE` for supported
 desktop triggers and actions. Use `nixe-homectl list`, `run ID`, `enable ID`,
-`disable ID`, `history`, and `status` to manage workflows while the GUI is closed.
+`disable ID`, `history`, `status`, and `dry-run FILE [CONTEXT]` to manage or inspect
+desktop workflows while the GUI is closed.
 An [example workflow](examples/manual-notification.json) can be imported with
 `nixe-homectl save examples/manual-notification.json`.
 The workflow file has `schema_version`, `id`, `name`, `enabled`, `nodes`, and `edges`.
-Each node has an `id` and a `type`; edges connect `from` to `to`. Phase 2 supports
-one trigger followed by a linear chain of actions. Workflow validation rejects
+Each node has an `id` and a `type`; edges connect `from` to `to`. The simple builder supports
+one trigger, an optional condition, and a linear chain of actions. Workflow validation rejects
 unknown node types, unsafe application IDs, cycles, and disconnected nodes.
 
 The service runs as the current user with no root privileges. It only invokes

@@ -300,7 +300,30 @@ fn show_section(ui: &Rc<RefCell<Ui>>, section: Section) {
     }
     drop(borrowed);
     if let Some(page) = ui.borrow().desktop_pages.get(section.id()) {
-        desktop_ui::refresh(page.clone(), section.id());
+        let borrowed = ui.borrow();
+        desktop_ui::refresh(
+            page.clone(),
+            section.id(),
+            crate::builder::HomeContext {
+                base: borrowed.base.clone(),
+                token: borrowed.token.clone(),
+                entities: borrowed
+                    .states
+                    .values()
+                    .map(|e| (e.entity_id.clone(), e.name(), e.state.clone()))
+                    .collect(),
+                automations: borrowed
+                    .states
+                    .values()
+                    .filter(|e| e.domain() == "automation")
+                    .filter_map(|e| {
+                        e.attributes["id"]
+                            .as_str()
+                            .map(|id| (id.to_string(), e.state.clone()))
+                    })
+                    .collect(),
+            },
+        );
     }
     prefs::update(|p| p.last_section = section.id().into());
 }

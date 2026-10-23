@@ -13,8 +13,18 @@ pub struct Workflow {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub owner: Owner,
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Owner {
+    #[default]
+    Desktop,
+    HomeAssistant,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,10 +42,15 @@ pub enum NodeKind {
     Interval { seconds: u64 },
     WindowOpened { class: String },
     WindowClosed { class: String },
+    EntityState { entity_id: String, state: String },
+    AppRunning { class: String },
+    EntityIs { entity_id: String, state: String },
     Notify { title: String, body: String },
     SwitchWorkspace { number: u8 },
     SetVolume { percent: u8 },
     LaunchApplication { desktop_id: String },
+    SetEntity { entity_id: String, turn_on: bool },
+    ActivateScene { entity_id: String },
 }
 
 impl NodeKind {
@@ -47,7 +62,11 @@ impl NodeKind {
                 | Self::Interval { .. }
                 | Self::WindowOpened { .. }
                 | Self::WindowClosed { .. }
+                | Self::EntityState { .. }
         )
+    }
+    pub fn is_condition(&self) -> bool {
+        matches!(self, Self::AppRunning { .. } | Self::EntityIs { .. })
     }
 }
 
@@ -56,6 +75,26 @@ impl NodeKind {
 pub struct Edge {
     pub from: String,
     pub to: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DryRunContext {
+    #[serde(default)]
+    pub entity_states: HashMap<String, String>,
+    #[serde(default)]
+    pub running_apps: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DryRunStep {
+    pub node_id: String,
+    pub result: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DryRunReport {
+    pub steps: Vec<DryRunStep>,
+    pub warnings: Vec<String>,
 }
 
 impl Workflow {
@@ -68,7 +107,7 @@ impl Workflow {
         }
         if self.nodes.len() < 2 || self.nodes.len() > 64 || self.edges.len() != self.nodes.len() - 1
         {
-            return Err("Phase 2 workflows need one trigger followed by 1–63 actions".into());
+            return Err("Workflows need one trigger followed by 1–63 conditions or actions".into());
         }
         let mut ids = HashSet::new();
         let mut kinds = HashMap::new();
@@ -85,6 +124,31 @@ impl Workflow {
                     if class.trim().is_empty() || class.len() > 128 =>
                 {
                     return Err("Window class is required".into());
+                }
+                NodeKind::AppRunning { class } if class.trim().is_empty() || class.len() > 128 => {
+                    return Err("Application class is required".into());
+                }
+                NodeKind::EntityState { entity_id, state }
+                | NodeKind::EntityIs { entity_id, state }
+                    if !valid_entity_id(entity_id)
+                        || state.trim().is_empty()
+                        || state.len() > 128 =>
+                {
+                    return Err("Entity state needs a valid entity and value".into());
+                }
+                NodeKind::SetEntity { entity_id, .. }
+                    if !valid_entity_id(entity_id)
+                        || !matches!(
+                            entity_id.split('.').next(),
+                            Some("light" | "switch" | "fan" | "input_boolean")
+                        ) =>
+                {
+                    return Err("This entity does not support the selected on/off action".into());
+                }
+                NodeKind::ActivateScene { entity_id }
+                    if !valid_entity_id(entity_id) || !entity_id.starts_with("scene.") =>
+                {
+                    return Err("A scene entity is required".into());
                 }
                 NodeKind::Notify { title, body }
                     if title.trim().is_empty() || title.len() > 120 || body.len() > 1000 =>
@@ -139,7 +203,134 @@ impl Workflow {
         {
             return Err("All actions must follow the trigger".into());
         }
+        let mut actions = 0;
+        for (index, id) in order.iter().enumerate() {
+            let kind = kinds[id.as_str()];
+            if index == 0 {
+                continue;
+            }
+            if kind.is_condition() {
+                if actions > 0 {
+                    return Err("Conditions must come before actions".into());
+                }
+            } else {
+                actions += 1;
+            }
+            let allowed = match self.owner {
+                Owner::Desktop => matches!(
+                    kind,
+                    NodeKind::AppRunning { .. }
+                        | NodeKind::Notify { .. }
+                        | NodeKind::SwitchWorkspace { .. }
+                        | NodeKind::SetVolume { .. }
+                        | NodeKind::LaunchApplication { .. }
+                ),
+                Owner::HomeAssistant => matches!(
+                    kind,
+                    NodeKind::EntityIs { .. }
+                        | NodeKind::SetEntity { .. }
+                        | NodeKind::ActivateScene { .. }
+                ),
+            };
+            if !allowed {
+                return Err("This node cannot run with the selected owner".into());
+            }
+        }
+        if actions == 0 {
+            return Err("At least one action is required".into());
+        }
+        let trigger_kind = kinds[trigger.as_str()];
+        if (self.owner == Owner::Desktop && matches!(trigger_kind, NodeKind::EntityState { .. }))
+            || (self.owner == Owner::HomeAssistant
+                && !matches!(trigger_kind, NodeKind::EntityState { .. }))
+        {
+            return Err("Trigger cannot run with the selected owner".into());
+        }
         Ok(order)
+    }
+
+    pub fn to_home_assistant(&self) -> Result<serde_json::Value, String> {
+        let order = self.validate()?;
+        if self.owner != Owner::HomeAssistant {
+            return Err("Workflow is desktop-owned".into());
+        }
+        let mut conditions = Vec::new();
+        let mut actions = Vec::new();
+        let mut trigger = None;
+        for id in order {
+            let kind = &self.nodes.iter().find(|n| n.id == id).unwrap().kind;
+            match kind {
+                NodeKind::EntityState { entity_id, state } => {
+                    trigger = Some(
+                        serde_json::json!({"trigger":"state","entity_id":entity_id,"to":state}),
+                    )
+                }
+                NodeKind::EntityIs { entity_id, state } => conditions.push(
+                    serde_json::json!({"condition":"state","entity_id":entity_id,"state":state}),
+                ),
+                NodeKind::SetEntity { entity_id, turn_on } => {
+                    let service = if *turn_on { "turn_on" } else { "turn_off" };
+                    let domain = entity_id.split('.').next().unwrap();
+                    actions.push(serde_json::json!({"action":format!("{domain}.{service}"),"target":{"entity_id":entity_id}}));
+                }
+                NodeKind::ActivateScene { entity_id } => actions.push(
+                    serde_json::json!({"action":"scene.turn_on","target":{"entity_id":entity_id}}),
+                ),
+                _ => return Err("Unsupported Home Assistant node".into()),
+            }
+        }
+        Ok(
+            serde_json::json!({"id":self.id,"alias":self.name,"triggers":[trigger.unwrap()],"conditions":conditions,"actions":actions,"mode":"single"}),
+        )
+    }
+
+    pub fn dry_run(&self, context: &DryRunContext) -> Result<DryRunReport, String> {
+        let order = self.validate()?;
+        let mut steps = Vec::new();
+        let mut warnings = Vec::new();
+        let mut skip = false;
+        for id in order {
+            let kind = &self.nodes.iter().find(|n| n.id == id).unwrap().kind;
+            let result = match kind {
+                kind if kind.is_trigger() => "trigger simulated".to_string(),
+                NodeKind::AppRunning { class } => match &context.running_apps {
+                    Some(apps) if apps.iter().any(|app| app.eq_ignore_ascii_case(class)) => {
+                        "condition true".into()
+                    }
+                    Some(_) => {
+                        skip = true;
+                        "condition false".into()
+                    }
+                    None => {
+                        skip = true;
+                        warnings
+                            .push("Current application list is unavailable in this dry run".into());
+                        "condition unknown".into()
+                    }
+                },
+                NodeKind::EntityIs { entity_id, state } => {
+                    match context.entity_states.get(entity_id) {
+                        Some(actual) if actual == state => "condition true".into(),
+                        Some(_) => {
+                            skip = true;
+                            "condition false".into()
+                        }
+                        None => {
+                            skip = true;
+                            warnings.push(format!("No current state for {entity_id}"));
+                            "condition unknown".into()
+                        }
+                    }
+                }
+                _ if skip => "skipped".into(),
+                _ => "planned action".into(),
+            };
+            steps.push(DryRunStep {
+                node_id: id,
+                result,
+            });
+        }
+        Ok(DryRunReport { steps, warnings })
     }
 }
 
@@ -158,6 +349,17 @@ fn valid_desktop_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
+fn valid_entity_id(s: &str) -> bool {
+    let Some((domain, object)) = s.split_once('.') else {
+        return false;
+    };
+    !domain.is_empty()
+        && !object.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'_' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +370,7 @@ mod tests {
             id: "test".into(),
             name: "Test".into(),
             enabled: true,
+            owner: Owner::Desktop,
             nodes: vec![
                 Node {
                     id: "trigger".into(),
@@ -196,5 +399,58 @@ mod tests {
             desktop_id: "$(touch /tmp/no).desktop".into(),
         };
         assert!(w.validate().is_err());
+    }
+
+    #[test]
+    fn home_translation_and_dry_run() {
+        let w = Workflow {
+            schema_version: 1,
+            id: "ha-test".into(),
+            name: "Motion lights".into(),
+            enabled: true,
+            owner: Owner::HomeAssistant,
+            nodes: vec![
+                Node {
+                    id: "when".into(),
+                    kind: NodeKind::EntityState {
+                        entity_id: "binary_sensor.motion".into(),
+                        state: "on".into(),
+                    },
+                },
+                Node {
+                    id: "if".into(),
+                    kind: NodeKind::EntityIs {
+                        entity_id: "person.ken".into(),
+                        state: "home".into(),
+                    },
+                },
+                Node {
+                    id: "then".into(),
+                    kind: NodeKind::SetEntity {
+                        entity_id: "light.office".into(),
+                        turn_on: true,
+                    },
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "when".into(),
+                    to: "if".into(),
+                },
+                Edge {
+                    from: "if".into(),
+                    to: "then".into(),
+                },
+            ],
+        };
+        let config = w.to_home_assistant().unwrap();
+        assert_eq!(config["actions"][0]["action"], "light.turn_on");
+        let report = w
+            .dry_run(&DryRunContext {
+                entity_states: HashMap::from([("person.ken".into(), "away".into())]),
+                running_apps: None,
+            })
+            .unwrap();
+        assert_eq!(report.steps[2].result, "skipped");
     }
 }

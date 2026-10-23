@@ -1,5 +1,7 @@
+use crate::builder::{self, HomeContext};
 use gtk::prelude::*;
-use nixe_home::automation::{BUS, Edge, INTERFACE, Node, NodeKind, PATH, Workflow};
+use nixe_home::automation::{BUS, INTERFACE, Owner, PATH, Workflow};
+use std::rc::Rc;
 
 pub fn page(section: &str) -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -59,14 +61,20 @@ fn call(method: &str, args: Option<Vec<String>>) -> Result<String, String> {
     }
 }
 
-fn request(page: gtk::Box, section: &'static str, method: &'static str, args: Option<Vec<String>>) {
+fn request(
+    page: gtk::Box,
+    section: &'static str,
+    home: HomeContext,
+    method: &'static str,
+    args: Option<Vec<String>>,
+) {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let _ = tx.send_blocking(call(method, args));
     });
     gtk::glib::MainContext::default().spawn_local(async move {
         match rx.recv().await {
-            Ok(Ok(_)) => refresh(page, section),
+            Ok(Ok(_)) => refresh(page, section, home),
             Ok(Err(e)) => {
                 let message = label(&e);
                 message.add_css_class("home-error");
@@ -77,7 +85,53 @@ fn request(page: gtk::Box, section: &'static str, method: &'static str, args: Op
     });
 }
 
-pub fn refresh(page: gtk::Box, section: &'static str) {
+fn request_home(
+    page: gtk::Box,
+    home: HomeContext,
+    id: String,
+    service: &'static str,
+    enabled: Option<bool>,
+) {
+    let (tx, rx) = async_channel::bounded(1);
+    let mut next_home = home.clone();
+    if let Some(value) = enabled {
+        next_home
+            .automations
+            .insert(id.clone(), if value { "on" } else { "off" }.into());
+    }
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(crate::ha_automation::control(
+                &home.base,
+                &home.token,
+                &id,
+                service,
+            ))?;
+            if let Some(value) = enabled {
+                call("SetEnabled", Some(vec![id, value.to_string()]))?;
+            }
+            Ok(())
+        })();
+        let _ = tx.send_blocking(result);
+    });
+    gtk::glib::MainContext::default().spawn_local(async move {
+        match rx.recv().await {
+            Ok(Ok(())) => refresh(page, "automations", next_home),
+            Ok(Err(e)) => {
+                let message = label(&e);
+                message.add_css_class("home-error");
+                page.append(&message);
+            }
+            Err(_) => {}
+        }
+    });
+}
+
+pub fn refresh(page: gtk::Box, section: &'static str, home: HomeContext) {
     clear(&page);
     let heading = label(match section {
         "system" => "System",
@@ -105,7 +159,7 @@ pub fn refresh(page: gtk::Box, section: &'static str) {
         match rx.recv().await {
             Ok(Ok(data)) => match section {
                 "system" => render_system(&page, &data),
-                "automations" => render_workflows(&page, &data),
+                "automations" => render_workflows(&page, &data, home),
                 _ => render_history(&page, &data),
             },
             Ok(Err(e)) => {
@@ -126,119 +180,145 @@ fn render_system(page: &gtk::Box, status: &str) {
     page.append(&box_);
 }
 
-fn render_workflows(page: &gtk::Box, data: &str) {
+fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
     let workflows: Vec<Workflow> = serde_json::from_str(data).unwrap_or_default();
     let create = card();
-    create.append(&label(
-        "Quick automation · When a window opens, send a notification",
-    ));
+    create.append(&label("Build an automation with WHEN → IF → THEN"));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let class = gtk::Entry::builder()
-        .placeholder_text("Window class, e.g. firefox")
-        .hexpand(true)
-        .build();
-    let title = gtk::Entry::builder()
-        .placeholder_text("Notification title")
-        .hexpand(true)
-        .build();
-    let add = gtk::Button::with_label("Create");
-    row.append(&class);
-    row.append(&title);
-    row.append(&add);
+    let desktop = gtk::Button::with_label("Desktop automation");
+    let home_button = gtk::Button::with_label("Home automation");
+    home_button.set_sensitive(
+        !home.base.is_empty() && !home.token.is_empty() && !home.entities.is_empty(),
+    );
+    row.append(&desktop);
+    row.append(&home_button);
     create.append(&row);
     page.append(&create);
-    let page_copy = page.clone();
-    add.connect_clicked(move |_| {
-        let class_value = class.text().trim().to_string();
-        let title_value = title.text().trim().to_string();
-        if class_value.is_empty() || title_value.is_empty() {
-            return;
-        }
-        let workflow = Workflow {
-            schema_version: 1,
-            id: format!("home-{}", uuid::Uuid::new_v4().simple()),
-            name: format!("{} opened", class_value),
-            enabled: true,
-            nodes: vec![
-                Node {
-                    id: "when".into(),
-                    kind: NodeKind::WindowOpened {
-                        class: class_value.clone(),
-                    },
-                },
-                Node {
-                    id: "then".into(),
-                    kind: NodeKind::Notify {
-                        title: title_value,
-                        body: format!("{} opened", class_value),
-                    },
-                },
-            ],
-            edges: vec![Edge {
-                from: "when".into(),
-                to: "then".into(),
-            }],
-        };
-        if let Ok(json) = serde_json::to_string(&workflow) {
-            request(
-                page_copy.clone(),
-                "automations",
-                "SaveWorkflow",
-                Some(vec![json]),
-            );
-        }
-    });
+    for (button, owner) in [
+        (desktop, Owner::Desktop),
+        (home_button, Owner::HomeAssistant),
+    ] {
+        let page = page.clone();
+        let home = home.clone();
+        button.connect_clicked(move |_| open_builder(&page, None, owner, home.clone()));
+    }
     if workflows.is_empty() {
-        page.append(&label("No desktop automations yet."));
+        page.append(&label("No automations yet."));
     }
     for workflow in workflows {
+        let is_enabled = if workflow.owner == Owner::HomeAssistant {
+            home.automations
+                .get(&workflow.id)
+                .map(|state| state == "on")
+                .unwrap_or(workflow.enabled)
+        } else {
+            workflow.enabled
+        };
         let box_ = card();
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let name = label(&workflow.name);
         name.set_hexpand(true);
         row.append(&name);
-        let run = gtk::Button::with_label("Run");
-        let toggle = gtk::Button::with_label(if workflow.enabled {
-            "Disable"
-        } else {
-            "Enable"
-        });
-        run.set_sensitive(workflow.enabled);
+        let run = gtk::Button::with_label("Live test");
+        let edit = gtk::Button::with_label("Edit");
+        let toggle = gtk::Button::with_label(if is_enabled { "Disable" } else { "Enable" });
+        run.set_sensitive(
+            is_enabled && (workflow.owner == Owner::Desktop || !home.token.is_empty()),
+        );
         row.append(&run);
+        row.append(&edit);
         row.append(&toggle);
         box_.append(&row);
         box_.append(&label(&format!(
-            "{} · {} actions",
-            if workflow.enabled {
-                "Enabled"
+            "{} · {} · {} actions",
+            if workflow.owner == Owner::Desktop {
+                "Desktop"
             } else {
-                "Disabled"
+                "Home Assistant"
             },
-            workflow.nodes.len() - 1
+            if is_enabled { "Enabled" } else { "Disabled" },
+            workflow
+                .nodes
+                .iter()
+                .filter(|n| !n.kind.is_trigger() && !n.kind.is_condition())
+                .count()
         )));
         page.append(&box_);
+        let edit_workflow = workflow.clone();
+        let page_copy = page.clone();
+        let home_copy = home.clone();
+        edit.connect_clicked(move |_| {
+            open_builder(
+                &page_copy,
+                Some(edit_workflow.clone()),
+                edit_workflow.owner,
+                home_copy.clone(),
+            )
+        });
         let id = workflow.id.clone();
         let page_copy = page.clone();
+        let home_copy = home.clone();
+        let owner = workflow.owner;
         run.connect_clicked(move |_| {
-            request(
-                page_copy.clone(),
-                "automations",
-                "RunWorkflow",
-                Some(vec![id.clone()]),
-            )
+            if owner == Owner::Desktop {
+                request(
+                    page_copy.clone(),
+                    "automations",
+                    home_copy.clone(),
+                    "RunWorkflow",
+                    Some(vec![id.clone()]),
+                );
+            } else {
+                request_home(
+                    page_copy.clone(),
+                    home_copy.clone(),
+                    id.clone(),
+                    "trigger",
+                    None,
+                );
+            }
         });
         let id = workflow.id;
-        let enabled = !workflow.enabled;
+        let enabled = !is_enabled;
         let page_copy = page.clone();
+        let home_copy = home.clone();
+        let owner = workflow.owner;
+        toggle.set_sensitive(owner == Owner::Desktop || !home.token.is_empty());
         toggle.connect_clicked(move |_| {
-            request(
-                page_copy.clone(),
-                "automations",
-                "SetEnabled",
-                Some(vec![id.clone(), enabled.to_string()]),
-            )
+            if owner == Owner::Desktop {
+                request(
+                    page_copy.clone(),
+                    "automations",
+                    home_copy.clone(),
+                    "SetEnabled",
+                    Some(vec![id.clone(), enabled.to_string()]),
+                );
+            } else {
+                request_home(
+                    page_copy.clone(),
+                    home_copy.clone(),
+                    id.clone(),
+                    if enabled { "turn_on" } else { "turn_off" },
+                    Some(enabled),
+                );
+            }
         });
     }
+}
+
+fn open_builder(page: &gtk::Box, workflow: Option<Workflow>, owner: Owner, home: HomeContext) {
+    let Some(parent) = page.root().and_then(|r| r.downcast::<gtk::Window>().ok()) else {
+        return;
+    };
+    let page_copy = page.clone();
+    let home_copy = home.clone();
+    builder::present(
+        &parent,
+        workflow,
+        owner,
+        home,
+        Rc::new(move || refresh(page_copy.clone(), "automations", home_copy.clone())),
+    );
 }
 
 fn render_history(page: &gtk::Box, data: &str) {

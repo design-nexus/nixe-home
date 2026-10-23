@@ -1,4 +1,4 @@
-use nixe_home::automation::{BUS, NodeKind, PATH, Workflow};
+use nixe_home::automation::{BUS, DryRunContext, NodeKind, Owner, PATH, Workflow};
 use rusqlite::{Connection, params};
 use std::{
     collections::{HashMap, HashSet},
@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::UnixStream,
     process::Command,
 };
@@ -73,6 +73,9 @@ impl Engine {
     }
 
     fn run(&self, workflow: Workflow, trigger: String) -> Result<String> {
+        if workflow.owner != Owner::Desktop {
+            return Err("Home Assistant owns this workflow".into());
+        }
         if !workflow.enabled {
             return Err("Workflow is disabled".into());
         }
@@ -103,6 +106,24 @@ impl Engine {
             let mut status = "completed";
             for id in order.iter().skip(1) {
                 let node = workflow.nodes.iter().find(|n| &n.id == id).unwrap();
+                if let NodeKind::AppRunning { class } = &node.kind {
+                    match app_running(class).await {
+                        Ok(true) => {
+                            detail.push(format!("{}: condition true", node.id));
+                            continue;
+                        }
+                        Ok(false) => {
+                            detail.push(format!("{}: condition false", node.id));
+                            status = "skipped";
+                            break;
+                        }
+                        Err(e) => {
+                            detail.push(format!("{}: condition unavailable ({e})", node.id));
+                            status = "failed";
+                            break;
+                        }
+                    }
+                }
                 match tokio::time::timeout(Duration::from_secs(10), execute(&node.kind)).await {
                     Ok(Ok(())) => detail.push(format!("{}: completed", node.id)),
                     Ok(Err(e)) => {
@@ -130,6 +151,15 @@ impl Engine {
     }
 }
 
+async fn app_running(class: &str) -> Result<bool> {
+    let clients: serde_json::Value = serde_json::from_str(&hypr_request("j/clients").await?)?;
+    Ok(clients.as_array().into_iter().flatten().any(|client| {
+        client["class"]
+            .as_str()
+            .is_some_and(|value| value.eq_ignore_ascii_case(class))
+    }))
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -138,15 +168,17 @@ fn now() -> i64 {
 }
 
 async fn execute(action: &NodeKind) -> Result<()> {
+    if let NodeKind::SwitchWorkspace { number } = action {
+        let result = hypr_request(&format!("dispatch workspace {number}")).await?;
+        if result.trim() != "ok" {
+            return Err("Hyprland rejected workspace change".into());
+        }
+        return Ok(());
+    }
     let mut command = match action {
         NodeKind::Notify { title, body } => {
             let mut c = Command::new("notify-send");
             c.args(["--app-name=Home", "--", title, body]);
-            c
-        }
-        NodeKind::SwitchWorkspace { number } => {
-            let mut c = Command::new("hyprctl");
-            c.args(["dispatch", "workspace", &number.to_string()]);
             c
         }
         NodeKind::SetVolume { percent } => {
@@ -172,6 +204,19 @@ async fn execute(action: &NodeKind) -> Result<()> {
     Ok(())
 }
 
+async fn hypr_request(request: &str) -> Result<String> {
+    let mut socket = hypr_event_socket().ok_or("Hyprland socket unavailable")?;
+    socket.set_file_name(".socket.sock");
+    tokio::time::timeout(Duration::from_secs(3), async move {
+        let mut stream = UnixStream::connect(socket).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut data = Vec::new();
+        stream.read_to_end(&mut data).await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(String::from_utf8(data)?)
+    })
+    .await?
+}
+
 struct Service {
     engine: Engine,
 }
@@ -189,6 +234,11 @@ impl Service {
         let workflow: Workflow = serde_json::from_str(json).map_err(dbus_error)?;
         self.engine.save(&workflow).map_err(dbus_error)?;
         Ok(workflow.id)
+    }
+    fn dry_run_workflow(&self, json: &str, context_json: &str) -> zbus::fdo::Result<String> {
+        let workflow: Workflow = serde_json::from_str(json).map_err(dbus_error)?;
+        let context: DryRunContext = serde_json::from_str(context_json).map_err(dbus_error)?;
+        serde_json::to_string(&workflow.dry_run(&context).map_err(dbus_error)?).map_err(dbus_error)
     }
     fn delete_workflow(&self, id: &str) -> zbus::fdo::Result<bool> {
         self.engine.delete(id).map_err(dbus_error)
@@ -230,7 +280,7 @@ async fn schedule(engine: Engine) {
             Ok(workflows) => {
                 let mut active = HashSet::new();
                 for workflow in workflows {
-                    if !workflow.enabled {
+                    if !workflow.enabled || workflow.owner != Owner::Desktop {
                         continue;
                     }
                     if let Some(seconds) = workflow.nodes.iter().find_map(|n| match n.kind {
@@ -284,7 +334,10 @@ async fn hypr_events(engine: Engine) {
                             _ => continue,
                         };
                         if let Ok(workflows) = engine.list() {
-                            for workflow in workflows.into_iter().filter(|w| w.enabled) {
+                            for workflow in workflows
+                                .into_iter()
+                                .filter(|w| w.enabled && w.owner == Owner::Desktop)
+                            {
                                 if workflow.nodes.iter().any(|n| match (&n.kind, kind) {
                                     (
                                         NodeKind::WindowOpened { class: expected },
@@ -356,10 +409,11 @@ async fn main() -> Result<()> {
         .build()
         .await?;
     if let Ok(workflows) = engine.list() {
-        for workflow in workflows
-            .into_iter()
-            .filter(|w| w.enabled && w.nodes.iter().any(|n| matches!(n.kind, NodeKind::Startup)))
-        {
+        for workflow in workflows.into_iter().filter(|w| {
+            w.enabled
+                && w.owner == Owner::Desktop
+                && w.nodes.iter().any(|n| matches!(n.kind, NodeKind::Startup))
+        }) {
             if let Err(e) = engine.run(workflow, "startup".into()) {
                 warn!("startup: {e}");
             }
