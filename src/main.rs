@@ -1,4 +1,5 @@
 mod credentials;
+mod desktop_ui;
 mod ha;
 mod prefs;
 mod theme;

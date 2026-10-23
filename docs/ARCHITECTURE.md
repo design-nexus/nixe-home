@@ -52,4 +52,24 @@ are registered; do not send users to a fabricated or unregistered callback.
 - The quick-control set is intentionally narrow (lights, switches, fans, input
   booleans, and locks). Other domains are visible but do not receive invented controls.
 - OAuth redirect registration, dashboard card rearrangement, camera streaming, and
-  all automation execution are out of scope for this foundation build.
+  home and hybrid automation execution are out of scope for this foundation build.
+
+## Phase 2 desktop engine
+
+- `nixe-homed` owns desktop workflow execution and stays running as a systemd user
+  service after the window closes. It exposes `Automation1` on the session D-Bus.
+- Version 1 workflow JSON is shared by the GUI, CLI and daemon. Node and edge IDs
+  are stable. `petgraph` checks the graph before saving or executing. The current
+  runtime accepts a single trigger followed by a linear action chain; branching and
+  parallel execution will extend the schema and runtime in Phase 4.
+- SQLite stores workflows and run records under Nixe Home's XDG data directory.
+  Running records are marked interrupted after daemon restart. Intervals do not
+  replay missed runs after downtime. Per-workflow concurrent execution is blocked.
+- Hyprland socket2 supplies window-open and close events. Event reconnects after
+  session changes. The daemon invokes only typed, allowlisted desktop operations
+  without a shell; application IDs, numerical ranges and notification lengths are
+  validated. External processes have 10-second timeouts. Scripts and imported shell
+  commands have no execution path.
+- The app queries the service off the GTK thread. The Automations page offers one
+  useful starter template; the full When / If / Then editor belongs to Phase 3.
+  Home Assistant remains authoritative for home-only automation.

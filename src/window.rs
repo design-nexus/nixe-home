@@ -1,5 +1,5 @@
 use crate::{
-    credentials,
+    credentials, desktop_ui,
     ha::{self, Entity, Update},
     prefs, theme,
 };
@@ -71,6 +71,7 @@ struct Ui {
     status: gtk::Label,
     entities: gtk::Box,
     overview: gtk::Box,
+    desktop_pages: BTreeMap<&'static str, gtk::Box>,
     states: BTreeMap<String, Entity>,
     area_count: usize,
     device_count: usize,
@@ -143,6 +144,7 @@ pub fn present(app: &gtk::Application) {
     overview.add_css_class("home-content");
     overview.set_hexpand(true);
     overview.set_vexpand(true);
+    let mut desktop_pages = BTreeMap::new();
     for section in Section::ALL {
         let button = gtk::Button::new();
         button.add_css_class("flat");
@@ -158,6 +160,11 @@ pub fn present(app: &gtk::Application) {
         let page = match section {
             Section::Overview => overview.clone().upcast::<gtk::Widget>(),
             Section::Home => entities.clone().upcast::<gtk::Widget>(),
+            Section::System | Section::Automations | Section::Activity => {
+                let page = desktop_ui::page(section.id());
+                desktop_pages.insert(section.id(), page.clone());
+                page.upcast::<gtk::Widget>()
+            }
             _ => readiness_page(section).upcast::<gtk::Widget>(),
         };
         stack.add_named(&page, Some(section.id()));
@@ -202,6 +209,7 @@ pub fn present(app: &gtk::Application) {
         status,
         entities,
         overview,
+        desktop_pages,
         states: BTreeMap::new(),
         area_count: 0,
         device_count: 0,
@@ -291,6 +299,9 @@ fn show_section(ui: &Rc<RefCell<Ui>>, section: Section) {
         }
     }
     drop(borrowed);
+    if let Some(page) = ui.borrow().desktop_pages.get(section.id()) {
+        desktop_ui::refresh(page.clone(), section.id());
+    }
     prefs::update(|p| p.last_section = section.id().into());
 }
 

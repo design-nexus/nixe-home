@@ -11,6 +11,14 @@ edition = "2024"
 name = "nixe-home"
 path = "src/main.rs"
 
+[[bin]]
+name = "nixe-homed"
+path = "src/bin/homed.rs"
+
+[[bin]]
+name = "nixe-homectl"
+path = "src/bin/homectl.rs"
+
 [dependencies]
 nixe-core = { git = "https://github.com/design-nexus/nixe-core.git", rev = "7cd0be5d09cd1d91510794f58bbc720605951c12" }
 nixe-ui = { git = "https://github.com/design-nexus/nixe-design.git", rev = "609c1d2a5af41a8ee3b76ba23611eb30d95a4743" }
@@ -21,6 +29,12 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
 reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2"
+petgraph = "0.8"
+rusqlite = { version = "0.40", features = ["bundled"] }
+zbus = "5"
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

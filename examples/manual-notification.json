@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "id": "manual-notification-example",
+  "name": "Manual notification",
+  "enabled": true,
+  "nodes": [
+    { "id": "when", "type": "manual" },
+    { "id": "then", "type": "notify", "title": "Home", "body": "Manual workflow completed" }
+  ],
+  "edges": [
+    { "from": "when", "to": "then" }
+  ]
+}

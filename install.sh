@@ -8,10 +8,16 @@ cargo build --release --locked --manifest-path "$root/Cargo.toml"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 share_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 install -Dm755 "$root/target/release/nixe-home" "$bin_dir/nixe-home"
+install -Dm755 "$root/target/release/nixe-homed" "$bin_dir/nixe-homed"
+install -Dm755 "$root/target/release/nixe-homectl" "$bin_dir/nixe-homectl"
 install -Dm644 "$root/data/io.github.design_nexus.nixe.Home.desktop" \
   "$share_dir/applications/io.github.design_nexus.nixe.Home.desktop"
 install -Dm644 "$root/data/icons/io.github.design_nexus.nixe.Home.svg" \
   "$share_dir/icons/hicolor/scalable/apps/io.github.design_nexus.nixe.Home.svg"
+install -Dm644 "$root/data/nixe-homed.service" "$share_dir/systemd/user/nixe-homed.service"
+systemctl --user daemon-reload
+systemctl --user enable nixe-homed.service
+systemctl --user start nixe-homed.service
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t "$share_dir/icons/hicolor" || true
 fi

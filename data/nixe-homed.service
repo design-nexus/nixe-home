@@ -1,0 +1,17 @@
+[Unit]
+Description=Home desktop automations
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/nixe-homed
+Restart=on-failure
+RestartSec=3
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,7 +1,7 @@
 # Home
 
 Nixe Home is a native Linux frontend for an existing Home Assistant instance, with a
-separate desktop automation engine planned for later phases. Home Assistant remains
+separate desktop automation engine. Home Assistant remains
 the smart-home backend.
 
 ## Current functionality
@@ -13,11 +13,16 @@ the smart-home backend.
   by area (with unassigned entities grouped by domain).
 - Pin devices to Overview and use basic controls for lights, switches, fans, input
   booleans, and locks.
-- Show all six planned sections with clear readiness information for features that
-  have not been implemented yet.
+- Run desktop automations from a systemd user service, independently of the window.
+- Create a window-open notification automation in the Automations page; enable,
+  disable, and run saved workflows there. Review run results in Activity.
+- Store versioned desktop workflows and execution history in SQLite. Supported
+  triggers include manual, startup, intervals, and Hyprland window open/close;
+  actions include notifications, desktop application launch, workspace switching,
+  and volume.
 
-The first build does not yet support cameras, robot controls, automation editing, or
-desktop actions.
+The current build does not yet support cameras, robot controls, the full graphical
+automation editor, or hybrid workflows.
 OAuth is deferred until the app has a registered website redirect. See
 [the architecture notes](docs/ARCHITECTURE.md).
 
@@ -30,8 +35,8 @@ cargo build --release --locked
 ./install.sh
 ```
 
-This installs `nixe-home`, a launcher entry, and the application icon under
-`~/.local`. It does not open the app. To run it, use `nixe-home` or select **Home** in
+This installs `nixe-home`, `nixe-homed`, `nixe-homectl`, a launcher entry, icon, and
+an enabled systemd user service under `~/.local`. It does not open the app. To run it, use `nixe-home` or select **Home** in
 the application launcher.
 
 ## Connect
@@ -43,6 +48,25 @@ is locked or unavailable, unlock or enable it before connecting.
 
 Use HTTPS when connecting over an untrusted network. Home Assistant authentication
 and service permissions remain managed by Home Assistant.
+
+## Desktop automations
+
+The Automations page provides a quick window-open notification template. The service
+also accepts versioned workflow JSON through `nixe-homectl save FILE` for supported
+desktop triggers and actions. Use `nixe-homectl list`, `run ID`, `enable ID`,
+`disable ID`, `history`, and `status` to manage workflows while the GUI is closed.
+An [example workflow](examples/manual-notification.json) can be imported with
+`nixe-homectl save examples/manual-notification.json`.
+The workflow file has `schema_version`, `id`, `name`, `enabled`, `nodes`, and `edges`.
+Each node has an `id` and a `type`; edges connect `from` to `to`. Phase 2 supports
+one trigger followed by a linear chain of actions. Workflow validation rejects
+unknown node types, unsafe application IDs, cycles, and disconnected nodes.
+
+The service runs as the current user with no root privileges. It only invokes
+allowlisted commands with separate arguments, enforces action timeouts, and records
+completion or failure. Desktop automation data is stored at
+`~/.local/share/nixe-home/automation.db`. Run `systemctl --user status nixe-homed`
+to inspect the service. Hyprland event triggers require an active Hyprland session.
 
 ## Development
 
