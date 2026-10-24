@@ -1,4 +1,5 @@
 //! Home Assistant transport and normalized entities.
+use crate::home_features::{self, RobotAction};
 use async_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -16,6 +17,8 @@ pub struct Entity {
     pub area_name: Option<String>,
     #[serde(skip)]
     pub device_name: Option<String>,
+    #[serde(skip)]
+    pub device_id: Option<String>,
 }
 
 impl Entity {
@@ -42,6 +45,7 @@ pub enum Update {
 #[derive(Debug, Clone, Default)]
 pub struct Inventory {
     pub entities: Vec<Entity>,
+    pub areas: Vec<Area>,
     pub area_count: usize,
     pub device_count: usize,
     pub metadata: std::sync::Arc<HashMap<String, Metadata>>,
@@ -51,6 +55,13 @@ pub struct Inventory {
 pub struct Metadata {
     pub area_name: Option<String>,
     pub device_name: Option<String>,
+    pub device_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Area {
+    pub id: String,
+    pub name: String,
 }
 
 pub async fn fetch_states(base: &str, token: &str) -> Result<Vec<Entity>, String> {
@@ -85,17 +96,18 @@ pub async fn fetch_inventory(base: &str, token: &str) -> Result<Inventory, Strin
         fetch_registry(base, token),
     )
     .await;
-    let (metadata, area_count, device_count) =
-        registry.ok().and_then(Result::ok).unwrap_or_default();
+    let (metadata, areas, device_count) = registry.ok().and_then(Result::ok).unwrap_or_default();
     for entity in &mut entities {
         if let Some(meta) = metadata.get(&entity.entity_id) {
             entity.area_name = meta.area_name.clone();
             entity.device_name = meta.device_name.clone();
+            entity.device_id = meta.device_id.clone();
         }
     }
     Ok(Inventory {
         entities,
-        area_count,
+        area_count: areas.len(),
+        areas,
         device_count,
         metadata: std::sync::Arc::new(metadata),
     })
@@ -104,7 +116,7 @@ pub async fn fetch_inventory(base: &str, token: &str) -> Result<Inventory, Strin
 async fn fetch_registry(
     base: &str,
     token: &str,
-) -> Result<(HashMap<String, Metadata>, usize, usize), String> {
+) -> Result<(HashMap<String, Metadata>, Vec<Area>, usize), String> {
     let mut url = url::Url::parse(base).map_err(|_| "Invalid URL".to_string())?;
     let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
     url.set_scheme(scheme)
@@ -136,11 +148,17 @@ async fn fetch_registry(
         .await
         .unwrap_or_default();
     let mut area_names = HashMap::new();
+    let mut area_list = Vec::new();
     for area in areas.as_array().into_iter().flatten() {
         if let (Some(id), Some(name)) = (area["area_id"].as_str(), area["name"].as_str()) {
             area_names.insert(id.to_string(), name.to_string());
+            area_list.push(Area {
+                id: id.to_string(),
+                name: name.to_string(),
+            });
         }
     }
+    area_list.sort_by(|a, b| a.name.cmp(&b.name));
     let mut device_data = HashMap::new();
     for device in devices.as_array().into_iter().flatten() {
         if let Some(id) = device["id"].as_str() {
@@ -173,10 +191,11 @@ async fn fetch_registry(
             Metadata {
                 area_name: area_id.as_ref().and_then(|id| area_names.get(id)).cloned(),
                 device_name: device.and_then(|d| d.0.clone()),
+                device_id: item["device_id"].as_str().map(str::to_string),
             },
         );
     }
-    Ok((metadata, area_names.len(), device_data.len()))
+    Ok((metadata, area_list, device_data.len()))
 }
 
 async fn read_json<S>(socket: &mut WebSocketStream<S>) -> Result<Value, String>
@@ -253,6 +272,108 @@ pub async fn call_service(base: &str, token: &str, entity: &Entity) -> Result<()
         .is_success()
         .then_some(())
         .ok_or_else(|| format!("Home Assistant returned HTTP {}.", response.status()))
+}
+
+pub async fn call_robot_service(
+    base: &str,
+    token: &str,
+    entity: &Entity,
+    action: RobotAction,
+    area_id: Option<&str>,
+) -> Result<(), String> {
+    if !home_features::robot_actions(entity).contains(&action) {
+        return Err("This robot does not offer that control.".into());
+    }
+    let service = action
+        .service(entity.domain())
+        .ok_or_else(|| "Unsupported robot control.".to_string())?;
+    let body = if action == RobotAction::CleanArea {
+        let area = area_id.ok_or_else(|| "Choose an area to clean.".to_string())?;
+        json!({"entity_id": entity.entity_id, "cleaning_area_id": [area]})
+    } else {
+        json!({"entity_id": entity.entity_id})
+    };
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|_| "Could not initialize the Home Assistant connection.".to_string())?
+        .post(format!(
+            "{}/api/services/{}/{}",
+            base.trim_end_matches('/'),
+            entity.domain(),
+            service
+        ))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Could not reach Home Assistant.".to_string())?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Home Assistant returned HTTP {}.",
+            response.status()
+        ))
+    }
+}
+
+pub async fn fetch_entity_picture(
+    base: &str,
+    token: &str,
+    entity: &Entity,
+) -> Result<Vec<u8>, String> {
+    let endpoint = match entity.domain() {
+        "camera" => "camera_proxy",
+        "image" => "image_proxy",
+        _ => return Err("This entity has no supported image preview.".into()),
+    };
+    if matches!(entity.state.as_str(), "unavailable" | "unknown" | "off") {
+        return Err("This image is unavailable.".into());
+    }
+    let mut response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| "Could not initialize the Home Assistant connection.".to_string())?
+        .get(format!(
+            "{}/api/{endpoint}/{}",
+            base.trim_end_matches('/'),
+            entity.entity_id
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| "Could not reach Home Assistant.".to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Preview unavailable (HTTP {}).", response.status()));
+    }
+    if !response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|kind| kind.starts_with("image/"))
+    {
+        return Err("Home Assistant did not return an image.".into());
+    }
+    const MAX_PREVIEW: usize = 8 * 1024 * 1024;
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_PREVIEW as u64)
+    {
+        return Err("Preview is too large to display.".into());
+    }
+    let mut data = Vec::new();
+    while let Some(part) = response
+        .chunk()
+        .await
+        .map_err(|_| "Could not read the image preview.".to_string())?
+    {
+        if data.len() + part.len() > MAX_PREVIEW {
+            return Err("Preview is too large to display.".into());
+        }
+        data.extend_from_slice(&part);
+    }
+    Ok(data)
 }
 
 pub fn start_live_updates(
@@ -355,6 +476,95 @@ mod tests {
         server.await.unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].name(), "Office lights");
+    }
+
+    #[tokio::test]
+    async fn camera_preview_uses_authenticated_proxy() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /api/camera_proxy/camera.office "));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer test-token")
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPNG!")
+                .await
+                .unwrap();
+        });
+        let camera: Entity = serde_json::from_value(json!({
+            "entity_id":"camera.office","state":"idle","attributes":{}
+        }))
+        .unwrap();
+        let image = fetch_entity_picture(&format!("http://{address}"), "test-token", &camera)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(image, b"PNG!");
+    }
+
+    #[tokio::test]
+    async fn vacuum_area_control_uses_mapped_area_id() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 2048];
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request
+                    .windows(b"cleaning_area_id".len())
+                    .any(|part| part == b"cleaning_area_id")
+                    && request
+                        .windows(b"kitchen".len())
+                        .any(|part| part == b"kitchen")
+                {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("POST /api/services/vacuum/clean_area "));
+            assert!(request.contains("\"entity_id\":\"vacuum.test\""));
+            assert!(request.contains("\"cleaning_area_id\":[\"kitchen\"]"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+                .await
+                .unwrap();
+        });
+        let vacuum: Entity = serde_json::from_value(json!({
+            "entity_id":"vacuum.test","state":"docked",
+            "attributes":{"supported_features":16384}
+        }))
+        .unwrap();
+        call_robot_service(
+            &format!("http://{address}"),
+            "test-token",
+            &vacuum,
+            RobotAction::CleanArea,
+            Some("kitchen"),
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
     }
 }
 

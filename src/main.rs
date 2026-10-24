@@ -4,6 +4,7 @@ mod credentials;
 mod desktop_ui;
 mod ha;
 mod ha_automation;
+mod home_features;
 mod prefs;
 mod theme;
 mod window;

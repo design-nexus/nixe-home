@@ -44,15 +44,14 @@ are registered; do not send users to a fabricated or unregistered callback.
 5. Supported quick controls call HA services with an `entity_id`; HA remains the
    authority for authorization, device capability, and resulting state.
 
-## Current limitations and next architecture decisions
+## Phase 1 limitations at the time
 
 - Area/device registry discovery is best-effort, because Home Assistant may restrict
   registry calls for some users or versions. Entities remain visible if registry
   access is unavailable.
 - The quick-control set is intentionally narrow (lights, switches, fans, input
   booleans, and locks). Other domains are visible but do not receive invented controls.
-- OAuth redirect registration, dashboard card rearrangement, camera streaming, and
-  home and hybrid automation execution are out of scope for this foundation build.
+- OAuth redirect registration and camera streaming remain future work.
 
 ## Phase 2 desktop engine
 
@@ -151,3 +150,28 @@ Home Assistant source references: [automation config endpoint](https://github.co
 
 References: [Home Assistant WebSocket API](https://contributors.home-assistant.io/core/internals/websocket-api/),
 [Home Assistant REST API](https://contributors.home-assistant.io/core/internals/rest-api/).
+
+## Phase 6 device views
+
+- Overview section order and visibility live in ordinary Nixe TOML preferences.
+  Favorites remain separate and each section follows Home Assistant's current
+  entity state. The Home page keeps area grouping and adds device-specific views.
+- Camera stills and image entities are requested only on demand over HA's
+  authenticated `camera_proxy` and `image_proxy` endpoints. The bearer token
+  stays in memory and requests run off the GTK thread. Responses must have an
+  image media type and stay under 8 MiB. GTK textures are kept in memory until
+  disconnect. Nixe does not store camera content or bypass HA's privacy state.
+- Vacuum and lawn mower controls are gated by each entity's `supported_features`
+  bitmask and validated again before the REST service call. Mower start requires
+  user confirmation. Vacuum area cleaning passes an area ID from the HA area
+  registry to `vacuum.clean_area`; HA remains responsible for configured segment
+  mapping and safety. A vacuum map is shown only when an image entity on the
+  same device is named as a map.
+- Energy and power sensors are shown with their own units. Device health reports
+  unavailable entities, low battery sensors, and available updates. No energy
+  totals are inferred across mixed units or unrelated meters.
+
+References: [camera proxy](https://github.com/home-assistant/core/blob/dev/homeassistant/components/camera/__init__.py),
+[vacuum features](https://github.com/home-assistant/core/blob/dev/homeassistant/components/vacuum/const.py),
+[lawn mower features](https://github.com/home-assistant/core/blob/dev/homeassistant/components/lawn_mower/const.py),
+[vacuum area cleaning](https://www.home-assistant.io/actions/vacuum.clean_area/).

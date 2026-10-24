@@ -1,6 +1,7 @@
 use crate::{
     credentials, desktop_ui,
-    ha::{self, Entity, Update},
+    ha::{self, Area, Entity, Update},
+    home_features::{self, RobotAction},
     prefs, theme,
 };
 use gtk::prelude::*;
@@ -75,6 +76,8 @@ struct Ui {
     states: BTreeMap<String, Entity>,
     area_count: usize,
     device_count: usize,
+    areas: Vec<Area>,
+    previews: Rc<RefCell<BTreeMap<String, gtk::gdk::Texture>>>,
     base: String,
     token: String,
     cancel: Option<async_channel::Sender<()>>,
@@ -213,6 +216,8 @@ pub fn present(app: &gtk::Application) {
         states: BTreeMap::new(),
         area_count: 0,
         device_count: 0,
+        areas: Vec::new(),
+        previews: Rc::new(RefCell::new(BTreeMap::new())),
         base: prefs.home_url.clone(),
         token: String::new(),
         cancel: None,
@@ -378,6 +383,7 @@ fn connection_dialog(ui: &Rc<RefCell<Ui>>) {
                     let _ = cancel.try_send(());
                 }
                 state.states.clear();
+                state.previews.borrow_mut().clear();
                 render_entities(&mut state);
                 state.status.set_text("Disconnected from Home Assistant.");
             }
@@ -458,6 +464,7 @@ fn start_connection(ui: &Rc<RefCell<Ui>>, base: String, token: String) {
                     let mut u = ui.borrow_mut();
                     u.area_count = inventory.area_count;
                     u.device_count = inventory.device_count;
+                    u.areas = inventory.areas;
                     u.states = inventory
                         .entities
                         .into_iter()
@@ -491,56 +498,52 @@ fn start_connection(ui: &Rc<RefCell<Ui>>, base: String, token: String) {
 fn render_entities(ui: &mut Ui) {
     clear_box(&ui.entities);
     clear_box(&ui.overview);
-    let home_heading = gtk::Label::new(Some("Devices and entities"));
-    home_heading.set_halign(gtk::Align::Start);
-    home_heading.add_css_class("home-heading");
-    ui.entities.append(&home_heading);
-    let total = ui.states.len();
-    let lights = ui.states.values().filter(|e| e.domain() == "light").count();
-    let online = ui
-        .states
-        .values()
-        .filter(|e| !matches!(e.state.as_str(), "unavailable" | "unknown"))
-        .count();
-    for (title, value) in [
-        ("Entities", total.to_string()),
-        ("Lights", lights.to_string()),
-        ("Areas", ui.area_count.to_string()),
-        ("Devices", ui.device_count.to_string()),
-        ("Available", online.to_string()),
-    ] {
-        let card = metric_card(title, &value);
-        ui.overview.append(&card);
-    }
-    let h = gtk::Label::new(Some("Favorite devices"));
-    h.set_halign(gtk::Align::Start);
-    h.add_css_class("home-heading");
-    ui.overview.append(&h);
-    let favorites = prefs::get().favorite_entities;
-    let favs: Vec<_> = ui
-        .states
-        .values()
-        .filter(|e| favorites.contains(&e.entity_id))
-        .cloned()
-        .collect();
-    if favs.is_empty() {
-        let note = gtk::Label::new(Some("Star devices on Home to pin them here."));
-        note.set_wrap(true);
-        note.set_halign(gtk::Align::Start);
-        note.add_css_class("home-muted");
-        ui.overview.append(&note);
-    } else {
-        for entity in favs {
-            ui.overview
-                .append(&entity_row(&entity, &ui.base, &ui.token, &ui.window));
+    let overview_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    overview_header.append(&section_heading("Overview"));
+    let customize = gtk::Button::with_label("Customize");
+    customize.add_css_class("flat");
+    customize.set_halign(gtk::Align::End);
+    overview_header.append(&customize);
+    ui.overview.append(&overview_header);
+    customize.connect_clicked(|_| {
+        UI.with(|slot| {
+            if let Some(ui) = slot.borrow().as_ref() {
+                dashboard_dialog(ui);
+            }
+        });
+    });
+    let settings = prefs::get();
+    let mut order = settings.dashboard_order.clone();
+    for (id, _) in home_features::DASHBOARD_CARDS {
+        if !order.iter().any(|saved| saved == id) {
+            order.push(id.into());
         }
     }
-    let note = gtk::Label::new(Some("Live state changes arrive from Home Assistant."));
-    note.set_halign(gtk::Align::Start);
-    note.add_css_class("home-muted");
-    ui.overview.append(&note);
+    for id in order {
+        if settings.dashboard_hidden.contains(&id) {
+            continue;
+        }
+        match id.as_str() {
+            "summary" => append_summary(ui),
+            "favorites" => append_favorites(ui, &settings.favorite_entities),
+            "cameras" => append_cameras(&ui.overview, ui),
+            "robots" => append_robots(&ui.overview, ui),
+            "energy" => append_energy(&ui.overview, ui),
+            "health" => append_health(&ui.overview, ui),
+            _ => {}
+        }
+    }
+    ui.entities.append(&section_heading("Home"));
+    append_cameras(&ui.entities, ui);
+    append_robots(&ui.entities, ui);
+    append_energy(&ui.entities, ui);
+    append_health(&ui.entities, ui);
+    ui.entities.append(&section_heading("Rooms and devices"));
     let mut grouped: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
     for entity in ui.states.values() {
+        if matches!(entity.domain(), "camera" | "vacuum" | "lawn_mower") {
+            continue;
+        }
         let name = entity
             .area_name
             .clone()
@@ -557,6 +560,562 @@ fn render_entities(ui: &mut Ui) {
             ui.entities
                 .append(&entity_row(entity, &ui.base, &ui.token, &ui.window));
         }
+    }
+}
+
+fn section_heading(title: &str) -> gtk::Label {
+    let heading = gtk::Label::new(Some(title));
+    heading.set_halign(gtk::Align::Start);
+    heading.add_css_class("home-heading");
+    heading
+}
+
+fn empty_note(text: &str) -> gtk::Label {
+    let note = gtk::Label::new(Some(text));
+    note.set_halign(gtk::Align::Start);
+    note.set_wrap(true);
+    note.add_css_class("home-muted");
+    note
+}
+
+fn append_summary(ui: &Ui) {
+    ui.overview.append(&section_heading("Home status"));
+    let metrics = gtk::FlowBox::new();
+    metrics.set_selection_mode(gtk::SelectionMode::None);
+    metrics.set_column_spacing(8);
+    metrics.set_row_spacing(8);
+    metrics.set_max_children_per_line(5);
+    let total = ui.states.len();
+    let lights = ui.states.values().filter(|e| e.domain() == "light").count();
+    let online = ui
+        .states
+        .values()
+        .filter(|e| !matches!(e.state.as_str(), "unavailable" | "unknown"))
+        .count();
+    for (title, value) in [
+        ("Entities", total.to_string()),
+        ("Lights", lights.to_string()),
+        ("Areas", ui.area_count.to_string()),
+        ("Devices", ui.device_count.to_string()),
+        ("Available", online.to_string()),
+    ] {
+        let card = metric_card(title, &value);
+        metrics.insert(&card, -1);
+    }
+    ui.overview.append(&metrics);
+}
+
+fn append_favorites(ui: &Ui, favorites: &[String]) {
+    ui.overview.append(&section_heading("Favorite devices"));
+    let favs: Vec<_> = ui
+        .states
+        .values()
+        .filter(|e| favorites.contains(&e.entity_id))
+        .cloned()
+        .collect();
+    if favs.is_empty() {
+        ui.overview
+            .append(&empty_note("Star devices on Home to pin them here."));
+    } else {
+        for entity in favs {
+            ui.overview
+                .append(&entity_row(&entity, &ui.base, &ui.token, &ui.window));
+        }
+    }
+}
+
+fn append_cameras(container: &gtk::Box, ui: &Ui) {
+    container.append(&section_heading("Cameras"));
+    let cameras: Vec<_> = ui
+        .states
+        .values()
+        .filter(|entity| entity.domain() == "camera")
+        .collect();
+    if cameras.is_empty() {
+        container.append(&empty_note(
+            "No camera entities are exposed by Home Assistant yet.",
+        ));
+    }
+    for entity in cameras {
+        container.append(&picture_card(
+            entity,
+            &ui.base,
+            &ui.token,
+            "Show preview",
+            &ui.previews,
+        ));
+    }
+}
+
+fn picture_card(
+    entity: &Entity,
+    base: &str,
+    token: &str,
+    action: &str,
+    previews: &Rc<RefCell<BTreeMap<String, gtk::gdk::Texture>>>,
+) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.add_css_class("home-card");
+    card.append(&section_heading(&entity.name()));
+    card.append(&empty_note(&format!(
+        "{} · {}",
+        entity.entity_id, entity.state
+    )));
+    let picture = gtk::Picture::new();
+    picture.set_size_request(280, 180);
+    picture.set_can_shrink(true);
+    let available = !matches!(entity.state.as_str(), "unavailable" | "unknown" | "off");
+    if available {
+        if let Some(texture) = previews.borrow().get(&entity.entity_id) {
+            picture.set_paintable(Some(texture));
+            picture.set_visible(true);
+        } else {
+            picture.set_visible(false);
+        }
+    } else {
+        picture.set_visible(false);
+    }
+    card.append(&picture);
+    let status = empty_note(if picture.is_visible() {
+        "Preview from Home Assistant"
+    } else {
+        "Preview loads only when requested."
+    });
+    let button = gtk::Button::with_label(action);
+    button.set_halign(gtk::Align::Start);
+    button.set_sensitive(available);
+    let e = entity.clone();
+    let base = base.to_string();
+    let token = token.to_string();
+    let image = picture.clone();
+    let message = status.clone();
+    let previews = previews.clone();
+    let preview_id = entity.entity_id.clone();
+    button.connect_clicked(move |button| {
+        button.set_sensitive(false);
+        message.set_text("Loading preview…");
+        let (sender, receiver) = async_channel::bounded(1);
+        let base = base.clone();
+        let token = token.clone();
+        let e = e.clone();
+        std::thread::spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|_| "Could not start the image loader.".to_string())
+                .and_then(|runtime| runtime.block_on(ha::fetch_entity_picture(&base, &token, &e)));
+            let _ = sender.send_blocking(result);
+        });
+        let picture = image.clone();
+        let status = message.clone();
+        let button = button.clone();
+        let previews = previews.clone();
+        let preview_id = preview_id.clone();
+        gtk::glib::timeout_add_local(
+            std::time::Duration::from_millis(100),
+            move || match receiver.try_recv() {
+                Ok(Ok(bytes)) => {
+                    match gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from(&bytes)) {
+                        Ok(texture) => {
+                            picture.set_paintable(Some(&texture));
+                            picture.set_visible(true);
+                            previews.borrow_mut().insert(preview_id.clone(), texture);
+                            status.set_text("Preview from Home Assistant");
+                        }
+                        Err(_) => status.set_text("Could not decode this image."),
+                    }
+                    button.set_sensitive(true);
+                    gtk::glib::ControlFlow::Break
+                }
+                Ok(Err(error)) => {
+                    status.set_text(&error);
+                    button.set_sensitive(true);
+                    gtk::glib::ControlFlow::Break
+                }
+                Err(async_channel::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+                Err(async_channel::TryRecvError::Closed) => {
+                    status.set_text("Preview request ended unexpectedly.");
+                    button.set_sensitive(true);
+                    gtk::glib::ControlFlow::Break
+                }
+            },
+        );
+    });
+    card.append(&button);
+    card.append(&status);
+    card
+}
+
+fn append_robots(container: &gtk::Box, ui: &Ui) {
+    container.append(&section_heading("Robots"));
+    let robots: Vec<_> = ui
+        .states
+        .values()
+        .filter(|entity| matches!(entity.domain(), "vacuum" | "lawn_mower"))
+        .collect();
+    if robots.is_empty() {
+        container.append(&empty_note(
+            "No vacuum or lawn mower entities are exposed by Home Assistant yet.",
+        ));
+    }
+    for entity in robots {
+        let card = robot_card(entity, ui);
+        container.append(&card);
+    }
+}
+
+fn robot_card(entity: &Entity, ui: &Ui) -> gtk::Box {
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    card.add_css_class("home-card");
+    card.append(&section_heading(&entity.name()));
+    card.append(&empty_note(&format!(
+        "{} · {}",
+        if entity.domain() == "vacuum" {
+            "Vacuum"
+        } else {
+            "Lawn mower"
+        },
+        entity.state
+    )));
+    let status = empty_note("");
+    let controls = gtk::FlowBox::new();
+    controls.set_selection_mode(gtk::SelectionMode::None);
+    controls.set_column_spacing(6);
+    controls.set_row_spacing(6);
+    let actions = home_features::robot_actions(entity);
+    for action in actions.iter().copied() {
+        let button = gtk::Button::with_label(action.label(entity.domain()));
+        let e = entity.clone();
+        let base = ui.base.clone();
+        let token = ui.token.clone();
+        let areas = ui.areas.clone();
+        let parent = ui.window.clone();
+        let status = status.clone();
+        button.connect_clicked(move |_| {
+            if action == RobotAction::CleanArea {
+                choose_cleaning_area(&parent, &base, &token, &e, &areas, &status);
+            } else if e.domain() == "lawn_mower" && action == RobotAction::Start {
+                confirm_mower_start(&parent, &base, &token, &e, &status);
+            } else {
+                run_robot_action(
+                    base.clone(),
+                    token.clone(),
+                    e.clone(),
+                    action,
+                    None,
+                    &status,
+                );
+            }
+        });
+        controls.insert(&button, -1);
+    }
+    if actions.is_empty() {
+        card.append(&empty_note("No controls are available for this entity."));
+    } else {
+        card.append(&controls);
+    }
+    if entity.domain() == "vacuum" {
+        let map = ui.states.values().find(|candidate| {
+            candidate.domain() == "image"
+                && candidate.device_id.is_some()
+                && candidate.device_id == entity.device_id
+                && candidate.name().to_ascii_lowercase().contains("map")
+        });
+        if let Some(map) = map {
+            card.append(&picture_card(
+                map,
+                &ui.base,
+                &ui.token,
+                "Show map",
+                &ui.previews,
+            ));
+        }
+    }
+    card.append(&status);
+    card
+}
+
+#[allow(deprecated)]
+fn choose_cleaning_area(
+    parent: &gtk::ApplicationWindow,
+    base: &str,
+    token: &str,
+    entity: &Entity,
+    areas: &[Area],
+    status: &gtk::Label,
+) {
+    if areas.is_empty() {
+        status.set_text("Home Assistant has no discoverable areas to clean.");
+        return;
+    }
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Clean area"),
+        Some(parent),
+        gtk::DialogFlags::MODAL,
+        &[
+            ("Cancel", gtk::ResponseType::Cancel),
+            ("Clean", gtk::ResponseType::Accept),
+        ],
+    );
+    let names: Vec<_> = areas.iter().map(|area| area.name.as_str()).collect();
+    let picker = gtk::DropDown::from_strings(&names);
+    picker.set_margin_top(12);
+    picker.set_margin_bottom(12);
+    picker.set_margin_start(12);
+    picker.set_margin_end(12);
+    dialog.content_area().append(&picker);
+    let areas = areas.to_vec();
+    let base = base.to_string();
+    let token = token.to_string();
+    let entity = entity.clone();
+    let status = status.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept
+            && let Some(area) = areas.get(picker.selected() as usize)
+        {
+            run_robot_action(
+                base.clone(),
+                token.clone(),
+                entity.clone(),
+                RobotAction::CleanArea,
+                Some(area.id.clone()),
+                &status,
+            );
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
+fn confirm_mower_start(
+    parent: &gtk::ApplicationWindow,
+    base: &str,
+    token: &str,
+    entity: &Entity,
+    status: &gtk::Label,
+) {
+    let alert = gtk::AlertDialog::builder()
+        .message(format!("Start {}?", entity.name()))
+        .detail("Check that the mowing area is clear and the mower's safety controls are enabled.")
+        .buttons(["Cancel", "Start mowing"])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+    let base = base.to_string();
+    let token = token.to_string();
+    let entity = entity.clone();
+    let status = status.clone();
+    alert.choose(
+        Some(parent),
+        None::<&gtk::gio::Cancellable>,
+        move |result| {
+            if result == Ok(1) {
+                run_robot_action(base, token, entity, RobotAction::Start, None, &status);
+            }
+        },
+    );
+}
+
+fn run_robot_action(
+    base: String,
+    token: String,
+    entity: Entity,
+    action: RobotAction,
+    area_id: Option<String>,
+    status: &gtk::Label,
+) {
+    status.set_text("Sending command…");
+    let (sender, receiver) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| "Could not start the Home Assistant request.".to_string())
+            .and_then(|runtime| {
+                runtime.block_on(ha::call_robot_service(
+                    &base,
+                    &token,
+                    &entity,
+                    action,
+                    area_id.as_deref(),
+                ))
+            });
+        let _ = sender.send_blocking(result);
+    });
+    let status = status.clone();
+    gtk::glib::timeout_add_local(
+        std::time::Duration::from_millis(100),
+        move || match receiver.try_recv() {
+            Ok(Ok(())) => {
+                status.set_text("Command sent. Waiting for Home Assistant state.");
+                gtk::glib::ControlFlow::Break
+            }
+            Ok(Err(error)) => {
+                status.set_text(&error);
+                gtk::glib::ControlFlow::Break
+            }
+            Err(async_channel::TryRecvError::Empty) => gtk::glib::ControlFlow::Continue,
+            Err(async_channel::TryRecvError::Closed) => {
+                status.set_text("The request ended unexpectedly.");
+                gtk::glib::ControlFlow::Break
+            }
+        },
+    );
+}
+
+fn append_energy(container: &gtk::Box, ui: &Ui) {
+    container.append(&section_heading("Energy"));
+    let sensors: Vec<_> = ui
+        .states
+        .values()
+        .filter(|e| home_features::is_energy(e))
+        .collect();
+    if sensors.is_empty() {
+        container.append(&empty_note(
+            "No energy or power sensors are exposed by Home Assistant yet.",
+        ));
+    }
+    for sensor in sensors {
+        let unit = sensor.attributes["unit_of_measurement"]
+            .as_str()
+            .unwrap_or("");
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        card.add_css_class("home-card");
+        let name = gtk::Label::new(Some(&sensor.name()));
+        name.set_halign(gtk::Align::Start);
+        name.set_hexpand(true);
+        let value = gtk::Label::new(Some(&format!("{} {unit}", sensor.state)));
+        card.append(&name);
+        card.append(&value);
+        container.append(&card);
+    }
+}
+
+fn append_health(container: &gtk::Box, ui: &Ui) {
+    container.append(&section_heading("Device health"));
+    let issues: Vec<_> = ui
+        .states
+        .values()
+        .filter_map(|entity| home_features::health_issue(entity).map(|issue| (entity, issue)))
+        .collect();
+    if issues.is_empty() {
+        container.append(&empty_note(
+            "No unavailable devices, low batteries, or pending updates.",
+        ));
+        return;
+    }
+    container.append(&empty_note(&format!(
+        "{} items need attention",
+        issues.len()
+    )));
+    for (entity, issue) in issues.into_iter().take(10) {
+        let card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        card.add_css_class("home-card");
+        let name = gtk::Label::new(Some(&entity.name()));
+        name.set_halign(gtk::Align::Start);
+        name.set_hexpand(true);
+        let detail = empty_note(&issue);
+        card.append(&name);
+        card.append(&detail);
+        container.append(&card);
+    }
+}
+
+#[allow(deprecated)]
+fn dashboard_dialog(ui: &Rc<RefCell<Ui>>) {
+    let parent = ui.borrow().window.clone();
+    let dialog = gtk::Dialog::with_buttons(
+        Some("Customize Overview"),
+        Some(&parent),
+        gtk::DialogFlags::MODAL,
+        &[
+            ("Cancel", gtk::ResponseType::Cancel),
+            ("Save", gtk::ResponseType::Accept),
+        ],
+    );
+    dialog.set_default_size(400, 340);
+    let settings = prefs::get();
+    let mut order = settings.dashboard_order;
+    for (id, _) in home_features::DASHBOARD_CARDS {
+        if !order.iter().any(|saved| saved == id) {
+            order.push(id.into());
+        }
+    }
+    order.retain(|id| {
+        home_features::DASHBOARD_CARDS
+            .iter()
+            .any(|(valid, _)| valid == id)
+    });
+    let rows = Rc::new(RefCell::new(
+        order
+            .into_iter()
+            .map(|id| {
+                let visible = !settings.dashboard_hidden.contains(&id);
+                (id, visible)
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    list.set_margin_top(14);
+    list.set_margin_bottom(14);
+    list.set_margin_start(16);
+    list.set_margin_end(16);
+    dialog.content_area().append(&list);
+    populate_dashboard_editor(&list, &rows);
+    let ui = ui.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            let rows = rows.borrow();
+            prefs::update(|settings| {
+                settings.dashboard_order = rows.iter().map(|(id, _)| id.clone()).collect();
+                settings.dashboard_hidden = rows
+                    .iter()
+                    .filter(|(_, visible)| !visible)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+            });
+            render_entities(&mut ui.borrow_mut());
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
+fn populate_dashboard_editor(list: &gtk::Box, rows: &Rc<RefCell<Vec<(String, bool)>>>) {
+    clear_box(list);
+    for (index, (id, visible)) in rows.borrow().iter().enumerate() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let check = gtk::CheckButton::with_label(
+            home_features::DASHBOARD_CARDS
+                .iter()
+                .find(|(card, _)| card == id)
+                .map(|(_, name)| *name)
+                .unwrap_or(id),
+        );
+        check.set_active(*visible);
+        check.set_hexpand(true);
+        let state = rows.clone();
+        check.connect_toggled(move |button| state.borrow_mut()[index].1 = button.is_active());
+        row.append(&check);
+        for (label, direction) in [("↑", -1isize), ("↓", 1)] {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("flat");
+            button.set_sensitive(if direction < 0 {
+                index > 0
+            } else {
+                index + 1 < rows.borrow().len()
+            });
+            let state = rows.clone();
+            let list = list.clone();
+            button.connect_clicked(move |_| {
+                state
+                    .borrow_mut()
+                    .swap(index, (index as isize + direction) as usize);
+                populate_dashboard_editor(&list, &state);
+            });
+            row.append(&button);
+        }
+        list.append(&row);
     }
 }
 

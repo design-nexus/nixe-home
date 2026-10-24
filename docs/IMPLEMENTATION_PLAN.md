@@ -21,12 +21,13 @@
 - **Phase 5:** Explicit desktop-owned hybrid workflows, HA event subscriptions,
   typed HA REST actions and state conditions, reconnection, persisted event
   receipts, duplicate suppression, and loop rate limits.
+- **Phase 6:** Camera and image still previews, capability-gated vacuum and lawn
+  mower controls, mapped vacuum area selection, energy/power sensor views,
+  device-health indicators, and reordered/hidden Overview cards.
 
 ## Next
 
-1. **Phase 6:** Capability-driven camera, robot and energy views from Home
-   Assistant entities.
-2. **Phase 7:** Optional assistant integration, accessibility, packaging and
+1. **Phase 7:** Optional assistant integration, accessibility, packaging and
    documentation polish.
 
 ## Current limits
@@ -45,5 +46,11 @@
   the desktop is offline. A receipt written immediately before a run prevents
   replay after a crash, so a crash at that point can lose the event. Keep
   home-critical automation in HA.
-- Camera previews and robot controls remain in later phases. Home Assistant
-  execution history stays in HA's traces; Activity shows desktop and hybrid runs.
+- Camera previews are still images loaded on request. Native HLS/WebRTC playback
+  and vendor-specific robot commands are not yet supported. Vacuum maps appear
+  only if Home Assistant exposes a map image entity associated with the vacuum.
+  The connected HA instance exposed no camera, vacuum, mower, image, energy, or
+  power entities during Phase 6 development, so those controls could only be
+  checked with mocked responses at that point.
+- Home Assistant execution history stays in HA's traces; Activity shows desktop
+  and hybrid runs.

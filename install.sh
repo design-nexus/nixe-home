@@ -7,9 +7,16 @@ command -v cargo >/dev/null || { echo "Rust/Cargo is required." >&2; exit 1; }
 cargo build --release --locked --manifest-path "$root/Cargo.toml"
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 share_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
-install -Dm755 "$root/target/release/nixe-home" "$bin_dir/nixe-home"
-install -Dm755 "$root/target/release/nixe-homed" "$bin_dir/nixe-homed"
-install -Dm755 "$root/target/release/nixe-homectl" "$bin_dir/nixe-homectl"
+install -d "$bin_dir"
+install_binary() {
+  local source="$1" target="$2" staged
+  staged="$(mktemp "$target.XXXXXX")"
+  install -m755 "$source" "$staged"
+  mv -f "$staged" "$target"
+}
+install_binary "$root/target/release/nixe-home" "$bin_dir/nixe-home"
+install_binary "$root/target/release/nixe-homed" "$bin_dir/nixe-homed"
+install_binary "$root/target/release/nixe-homectl" "$bin_dir/nixe-homectl"
 install -Dm644 "$root/data/io.github.design_nexus.nixe.Home.desktop" \
   "$share_dir/applications/io.github.design_nexus.nixe.Home.desktop"
 install -Dm644 "$root/data/icons/io.github.design_nexus.nixe.Home.svg" \

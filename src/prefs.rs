@@ -12,6 +12,8 @@ pub struct Prefs {
     pub last_section: String,
     pub home_url: String,
     pub favorite_entities: Vec<String>,
+    pub dashboard_order: Vec<String>,
+    pub dashboard_hidden: Vec<String>,
 }
 
 impl Default for Prefs {
@@ -25,6 +27,18 @@ impl Default for Prefs {
             last_section: "overview".into(),
             home_url: String::new(),
             favorite_entities: Vec::new(),
+            dashboard_order: [
+                "summary",
+                "favorites",
+                "cameras",
+                "robots",
+                "energy",
+                "health",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            dashboard_hidden: Vec::new(),
         }
     }
 }

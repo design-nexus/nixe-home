@@ -29,8 +29,14 @@ the smart-home backend.
   tests highlight nodes; live tests can be canceled.
 - Build desktop-owned hybrid automations that react to Home Assistant state
   changes or invoke supported Home Assistant entity and scene actions.
+- View camera still previews on request, control vacuums and lawn mowers through
+  actions their entities support, clean mapped Home Assistant areas, and view
+  vacuum map image entities when available. See live energy and power sensors,
+  device health, and a reorderable Overview with hideable cards.
 
-The current build does not yet support cameras or robot controls.
+Camera live video streams and vendor-specific robot commands are not available yet.
+Camera, robot, map, and energy controls appear when Home Assistant exposes the
+corresponding entities and capabilities.
 OAuth is deferred until the app has a registered website redirect. See
 [the architecture notes](docs/ARCHITECTURE.md).
 
@@ -46,6 +52,20 @@ cargo build --release --locked
 This installs `nixe-home`, `nixe-homed`, `nixe-homectl`, a launcher entry, icon, and
 an enabled systemd user service under `~/.local`. It does not open the app. To run it, use `nixe-home` or select **Home** in
 the application launcher.
+
+## Home dashboard and devices
+
+Open **Overview → Customize** to reorder or hide dashboard sections. Star an
+entity in **Home** to pin it. **Home** also groups entities by area and shows
+camera, robot, energy, and device-health sections.
+
+Camera previews and vacuum maps load only when you click **Show preview** or
+**Show map**. Images come through Home Assistant's authenticated proxy and are
+kept in memory, not written to disk. Vacuum and mower buttons appear only when
+their Home Assistant entities report support for those actions. Starting a
+mower asks for confirmation. Area cleaning uses Home Assistant's mapped areas;
+configure the vacuum's area mapping in Home Assistant first. Energy values retain
+their sensor units and are not added across incompatible units.
 
 ## Connect
 
