@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let json = std::fs::read_to_string(&args[1])?;
             let workflow: Workflow = serde_json::from_str(&json)?;
             workflow.validate()?;
-            if workflow.owner != Owner::Desktop {
+            if workflow.owner == Owner::HomeAssistant {
                 return Err(
                     "Home Assistant workflows must be saved through the Home editor".into(),
                 );

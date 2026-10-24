@@ -49,7 +49,7 @@ fn call(method: &str, args: Option<Vec<String>>) -> Result<String, String> {
         "SaveWorkflow" => proxy
             .call(method, &(args.unwrap()[0].clone()))
             .map_err(|e| e.to_string()),
-        "RunWorkflow" => proxy
+        "RunWorkflow" | "RunProgress" => proxy
             .call(method, &(args.unwrap()[0].clone()))
             .map_err(|e| e.to_string()),
         "SetEnabled" => {
@@ -191,12 +191,22 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
     let desktop = gtk::Button::with_label("Desktop automation");
     let advanced = gtk::Button::with_label("Advanced canvas");
     let home_button = gtk::Button::with_label("Home automation");
+    let hybrid_button = gtk::Button::with_label("Hybrid automation");
     home_button.set_sensitive(
         !home.base.is_empty() && !home.token.is_empty() && !home.entities.is_empty(),
+    );
+    hybrid_button.set_sensitive(
+        !home.base.is_empty()
+            && home.entities.iter().any(|(id, _, _)| {
+                ["light.", "switch.", "fan.", "input_boolean."]
+                    .iter()
+                    .any(|prefix| id.starts_with(prefix))
+            }),
     );
     row.append(&desktop);
     row.append(&advanced);
     row.append(&home_button);
+    row.append(&hybrid_button);
     create.append(&row);
     page.append(&create);
     for (button, owner) in [
@@ -235,8 +245,55 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
                 output: None,
             }],
             positions: Default::default(),
+            policies: Default::default(),
+            groups: Default::default(),
         };
         open_canvas(&page_advanced, workflow, home_advanced.clone());
+    });
+    let page_hybrid = page.clone();
+    let home_hybrid = home.clone();
+    hybrid_button.connect_clicked(move |_| {
+        let Some(entity_id) = home_hybrid
+            .entities
+            .iter()
+            .find(|(id, _, _)| {
+                ["light.", "switch.", "fan.", "input_boolean."]
+                    .iter()
+                    .any(|prefix| id.starts_with(prefix))
+            })
+            .map(|(id, _, _)| id.clone())
+        else {
+            return;
+        };
+        let workflow = Workflow {
+            schema_version: 1,
+            id: format!("home-{}", uuid::Uuid::new_v4().simple()),
+            name: "New hybrid automation".into(),
+            enabled: true,
+            owner: Owner::HybridDesktop,
+            nodes: vec![
+                Node {
+                    id: "trigger".into(),
+                    kind: NodeKind::Manual,
+                },
+                Node {
+                    id: "action".into(),
+                    kind: NodeKind::SetEntity {
+                        entity_id,
+                        turn_on: true,
+                    },
+                },
+            ],
+            edges: vec![Edge {
+                from: "trigger".into(),
+                to: "action".into(),
+                output: None,
+            }],
+            positions: Default::default(),
+            policies: Default::default(),
+            groups: Default::default(),
+        };
+        open_canvas(&page_hybrid, workflow, home_hybrid.clone());
     });
     if workflows.is_empty() {
         page.append(&label("No automations yet."));
@@ -260,7 +317,7 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         let canvas_button = gtk::Button::with_label("Canvas");
         let toggle = gtk::Button::with_label(if is_enabled { "Disable" } else { "Enable" });
         run.set_sensitive(
-            is_enabled && (workflow.owner == Owner::Desktop || !home.token.is_empty()),
+            is_enabled && (workflow.owner != Owner::HomeAssistant || !home.token.is_empty()),
         );
         row.append(&run);
         row.append(&edit);
@@ -269,10 +326,10 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         box_.append(&row);
         box_.append(&label(&format!(
             "{} · {} · {} actions",
-            if workflow.owner == Owner::Desktop {
-                "Desktop"
-            } else {
-                "Home Assistant"
+            match workflow.owner {
+                Owner::Desktop => "Desktop",
+                Owner::HomeAssistant => "Home Assistant",
+                Owner::HybridDesktop => "Hybrid · desktop-owned",
             },
             if is_enabled { "Enabled" } else { "Disabled" },
             workflow
@@ -286,12 +343,16 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         let page_copy = page.clone();
         let home_copy = home.clone();
         edit.connect_clicked(move |_| {
-            open_builder(
-                &page_copy,
-                Some(edit_workflow.clone()),
-                edit_workflow.owner,
-                home_copy.clone(),
-            )
+            if edit_workflow.owner == Owner::HybridDesktop {
+                open_canvas(&page_copy, edit_workflow.clone(), home_copy.clone());
+            } else {
+                open_builder(
+                    &page_copy,
+                    Some(edit_workflow.clone()),
+                    edit_workflow.owner,
+                    home_copy.clone(),
+                )
+            }
         });
         let page_canvas = page.clone();
         let home_canvas = home.clone();
@@ -304,7 +365,7 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         let home_copy = home.clone();
         let owner = workflow.owner;
         run.connect_clicked(move |_| {
-            if owner == Owner::Desktop {
+            if owner != Owner::HomeAssistant {
                 request(
                     page_copy.clone(),
                     "automations",
@@ -327,9 +388,9 @@ fn render_workflows(page: &gtk::Box, data: &str, home: HomeContext) {
         let page_copy = page.clone();
         let home_copy = home.clone();
         let owner = workflow.owner;
-        toggle.set_sensitive(owner == Owner::Desktop || !home.token.is_empty());
+        toggle.set_sensitive(owner != Owner::HomeAssistant || !home.token.is_empty());
         toggle.connect_clicked(move |_| {
-            if owner == Owner::Desktop {
+            if owner != Owner::HomeAssistant {
                 request(
                     page_copy.clone(),
                     "automations",
@@ -386,13 +447,59 @@ fn render_history(page: &gtk::Box, data: &str) {
     }
     for run in runs {
         let box_ = card();
+        let started = run["started_at"].as_i64().unwrap_or_default();
+        let timestamp = gtk::glib::DateTime::from_unix_local(started)
+            .ok()
+            .and_then(|date| date.format("%x %X").ok())
+            .map(|text| text.to_string())
+            .unwrap_or_else(|| started.to_string());
+        let duration = run["finished_at"]
+            .as_i64()
+            .map(|end| format!(" · {}s", (end - started).max(0)))
+            .unwrap_or_default();
         box_.append(&label(&format!(
-            "{} · {} · {}",
+            "{} · {} · {} · {}{}",
             run["workflow_id"].as_str().unwrap_or(""),
             run["status"].as_str().unwrap_or(""),
-            run["trigger"].as_str().unwrap_or("")
+            run["trigger"].as_str().unwrap_or(""),
+            timestamp,
+            duration
         )));
         box_.append(&label(run["detail"].as_str().unwrap_or("")));
+        if let Some(id) = run["id"].as_str() {
+            let details = gtk::Button::with_label("Node details");
+            details.set_halign(gtk::Align::Start);
+            box_.append(&details);
+            let id = id.to_string();
+            let box_copy = box_.clone();
+            details.connect_clicked(move |button| {
+                button.set_sensitive(false);
+                let (tx, rx) = async_channel::bounded(1);
+                let id = id.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send_blocking(call("RunProgress", Some(vec![id])));
+                });
+                let box_copy = box_copy.clone();
+                gtk::glib::MainContext::default().spawn_local(async move {
+                    match rx.recv().await {
+                        Ok(Ok(data)) => {
+                            if let Ok(report) = serde_json::from_str::<serde_json::Value>(&data) {
+                                for node in report["nodes"].as_array().into_iter().flatten() {
+                                    box_copy.append(&label(&format!(
+                                        "{} · {} · {}",
+                                        node["node_id"].as_str().unwrap_or(""),
+                                        node["status"].as_str().unwrap_or(""),
+                                        node["detail"].as_str().unwrap_or("")
+                                    )));
+                                }
+                            }
+                        }
+                        Ok(Err(error)) => box_copy.append(&label(&error)),
+                        Err(_) => {}
+                    }
+                });
+            });
+        }
         page.append(&box_);
     }
 }

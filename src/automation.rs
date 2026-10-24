@@ -19,6 +19,33 @@ pub struct Workflow {
     pub edges: Vec<Edge>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub positions: HashMap<String, Point>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub policies: HashMap<String, ActionPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionPolicy {
+    #[serde(default)]
+    pub retries: u8,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: u64,
+}
+
+fn default_timeout() -> u64 {
+    10
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -33,6 +60,7 @@ pub enum Owner {
     #[default]
     Desktop,
     HomeAssistant,
+    HybridDesktop,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,22 +75,74 @@ pub struct Node {
 pub enum NodeKind {
     Manual,
     Startup,
-    Interval { seconds: u64 },
-    WindowOpened { class: String },
-    WindowClosed { class: String },
-    EntityState { entity_id: String, state: String },
-    AppRunning { class: String },
-    EntityIs { entity_id: String, state: String },
-    Notify { title: String, body: String },
-    SwitchWorkspace { number: u8 },
-    SetVolume { percent: u8 },
-    LaunchApplication { desktop_id: String },
-    SetEntity { entity_id: String, turn_on: bool },
-    ActivateScene { entity_id: String },
-    BranchAppRunning { class: String },
+    Interval {
+        seconds: u64,
+    },
+    WindowOpened {
+        class: String,
+    },
+    WindowClosed {
+        class: String,
+    },
+    EntityState {
+        entity_id: String,
+        state: String,
+    },
+    AppRunning {
+        class: String,
+    },
+    EntityIs {
+        entity_id: String,
+        state: String,
+    },
+    Notify {
+        title: String,
+        body: String,
+    },
+    SwitchWorkspace {
+        number: u8,
+    },
+    SetVolume {
+        percent: u8,
+    },
+    LaunchApplication {
+        desktop_id: String,
+    },
+    SetEntity {
+        entity_id: String,
+        turn_on: bool,
+    },
+    ActivateScene {
+        entity_id: String,
+    },
+    BranchAppRunning {
+        class: String,
+    },
     Parallel,
-    Delay { seconds: u64 },
+    Delay {
+        seconds: u64,
+    },
     Stop,
+    Repeat {
+        times: u8,
+    },
+    WaitWindowOpened {
+        class: String,
+        timeout_seconds: u64,
+    },
+    WaitEntityState {
+        entity_id: String,
+        state: String,
+        timeout_seconds: u64,
+    },
+    SetVariable {
+        name: String,
+        value: String,
+    },
+    VariableEquals {
+        name: String,
+        value: String,
+    },
 }
 
 impl NodeKind {
@@ -78,7 +158,27 @@ impl NodeKind {
         )
     }
     pub fn is_condition(&self) -> bool {
-        matches!(self, Self::AppRunning { .. } | Self::EntityIs { .. })
+        matches!(
+            self,
+            Self::AppRunning { .. } | Self::EntityIs { .. } | Self::VariableEquals { .. }
+        )
+    }
+    pub fn is_action(&self) -> bool {
+        matches!(
+            self,
+            Self::Notify { .. }
+                | Self::SwitchWorkspace { .. }
+                | Self::SetVolume { .. }
+                | Self::LaunchApplication { .. }
+                | Self::SetEntity { .. }
+                | Self::ActivateScene { .. }
+        )
+    }
+    pub fn supports_retry(&self) -> bool {
+        matches!(
+            self,
+            Self::SwitchWorkspace { .. } | Self::SetVolume { .. } | Self::SetEntity { .. }
+        )
     }
 }
 
@@ -139,6 +239,29 @@ impl Workflow {
                 {
                     return Err("Window class is required".into());
                 }
+                NodeKind::WaitWindowOpened {
+                    class,
+                    timeout_seconds,
+                } if class.trim().is_empty()
+                    || class.len() > 128
+                    || !(1..=3600).contains(timeout_seconds) =>
+                {
+                    return Err("Window wait needs a class and timeout of 1–3600 seconds".into());
+                }
+                NodeKind::WaitEntityState {
+                    entity_id,
+                    state,
+                    timeout_seconds,
+                } if !valid_entity_id(entity_id)
+                    || state.trim().is_empty()
+                    || state.len() > 128
+                    || !(1..=3600).contains(timeout_seconds) =>
+                {
+                    return Err("Entity wait needs a valid entity, state and timeout".into());
+                }
+                NodeKind::Repeat { times } if !(1..=10).contains(times) => {
+                    return Err("Repeat count must be 1–10".into());
+                }
                 NodeKind::AppRunning { class } | NodeKind::BranchAppRunning { class }
                     if class.trim().is_empty() || class.len() > 128 =>
                 {
@@ -182,6 +305,14 @@ impl Workflow {
                 }
                 NodeKind::LaunchApplication { desktop_id } if !valid_desktop_id(desktop_id) => {
                     return Err("Application must be a valid desktop file ID".into());
+                }
+                NodeKind::SetVariable { name, value }
+                | NodeKind::VariableEquals { name, value }
+                    if !valid_variable_name(name) || value.len() > 256 =>
+                {
+                    return Err(
+                        "Variable needs a valid name and value of at most 256 characters".into(),
+                    );
                 }
                 _ => {}
             }
@@ -243,8 +374,21 @@ impl Workflow {
                 NodeKind::Parallel
                     if outgoing.len() >= 2 && outgoing.iter().all(|e| e.output.is_none()) => {}
                 NodeKind::Parallel => return Err("Parallel needs at least two outputs".into()),
+                NodeKind::Repeat { .. } if outgoing.len() == 1 && outgoing[0].output.is_none() => {}
+                NodeKind::Repeat { .. } => return Err("Repeat needs one child path".into()),
                 NodeKind::Stop if outgoing.is_empty() => {}
                 NodeKind::Stop => return Err("Stop cannot have outgoing edges".into()),
+                _ if kind.is_action()
+                    && outgoing.len() <= 2
+                    && outgoing.iter().filter(|e| e.output.is_none()).count() <= 1
+                    && outgoing
+                        .iter()
+                        .filter(|e| e.output.as_deref() == Some("error"))
+                        .count()
+                        <= 1
+                    && outgoing
+                        .iter()
+                        .all(|e| e.output.is_none() || e.output.as_deref() == Some("error")) => {}
                 _ if outgoing.len() <= 1 && outgoing.iter().all(|e| e.output.is_none()) => {}
                 _ => return Err("Only branch or parallel nodes may have multiple outputs".into()),
             }
@@ -255,25 +399,35 @@ impl Workflow {
                 if self.owner == Owner::HomeAssistant && actions > 0 {
                     return Err("Conditions must come before actions".into());
                 }
-            } else if !matches!(
-                kind,
-                NodeKind::BranchAppRunning { .. } | NodeKind::Parallel | NodeKind::Stop
-            ) {
+            } else if kind.is_action() {
                 actions += 1;
             }
             let allowed = match self.owner {
-                Owner::Desktop => matches!(
-                    kind,
-                    NodeKind::AppRunning { .. }
-                        | NodeKind::Notify { .. }
-                        | NodeKind::SwitchWorkspace { .. }
-                        | NodeKind::SetVolume { .. }
-                        | NodeKind::LaunchApplication { .. }
-                        | NodeKind::BranchAppRunning { .. }
-                        | NodeKind::Parallel
-                        | NodeKind::Delay { .. }
-                        | NodeKind::Stop
-                ),
+                Owner::Desktop | Owner::HybridDesktop => {
+                    matches!(
+                        kind,
+                        NodeKind::AppRunning { .. }
+                            | NodeKind::Notify { .. }
+                            | NodeKind::SwitchWorkspace { .. }
+                            | NodeKind::SetVolume { .. }
+                            | NodeKind::LaunchApplication { .. }
+                            | NodeKind::BranchAppRunning { .. }
+                            | NodeKind::Parallel
+                            | NodeKind::Delay { .. }
+                            | NodeKind::Stop
+                            | NodeKind::Repeat { .. }
+                            | NodeKind::WaitWindowOpened { .. }
+                            | NodeKind::SetVariable { .. }
+                            | NodeKind::VariableEquals { .. }
+                    ) || (self.owner == Owner::HybridDesktop
+                        && matches!(
+                            kind,
+                            NodeKind::EntityIs { .. }
+                                | NodeKind::SetEntity { .. }
+                                | NodeKind::ActivateScene { .. }
+                                | NodeKind::WaitEntityState { .. }
+                        ))
+                }
                 Owner::HomeAssistant => matches!(
                     kind,
                     NodeKind::EntityIs { .. }
@@ -291,6 +445,37 @@ impl Workflow {
         if self.owner == Owner::HomeAssistant && self.edges.iter().any(|e| e.output.is_some()) {
             return Err("Home Assistant workflow must be linear".into());
         }
+        for (id, policy) in &self.policies {
+            let kind = kinds
+                .get(id.as_str())
+                .ok_or("Policy refers to an unknown node")?;
+            if !kind.is_action()
+                || policy.timeout_seconds == 0
+                || policy.timeout_seconds > 60
+                || policy.retries > 3
+                || (policy.retries > 0 && !kind.supports_retry())
+                || self.owner == Owner::HomeAssistant
+            {
+                return Err("Action policy is invalid for this node or owner".into());
+            }
+        }
+        let mut grouped = HashSet::new();
+        let mut group_ids = HashSet::new();
+        for group in &self.groups {
+            if !valid_id(&group.id)
+                || !group_ids.insert(&group.id)
+                || group.name.trim().is_empty()
+                || group.name.len() > 80
+                || group.members.len() < 2
+            {
+                return Err("Group needs a unique ID, name and at least two nodes".into());
+            }
+            for member in &group.members {
+                if !ids.contains(member.as_str()) || !grouped.insert(member.as_str()) {
+                    return Err("Group members must exist and belong to one group".into());
+                }
+            }
+        }
         if self.positions.iter().any(|(id, p)| {
             !ids.contains(id.as_str())
                 || !p.x.is_finite()
@@ -306,6 +491,38 @@ impl Workflow {
                 && !matches!(trigger_kind, NodeKind::EntityState { .. }))
         {
             return Err("Trigger cannot run with the selected owner".into());
+        }
+        if self.owner == Owner::HybridDesktop {
+            let has_home = self.nodes.iter().any(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::EntityState { .. }
+                        | NodeKind::EntityIs { .. }
+                        | NodeKind::SetEntity { .. }
+                        | NodeKind::ActivateScene { .. }
+                        | NodeKind::WaitEntityState { .. }
+                )
+            });
+            let has_desktop = self.nodes.iter().any(|n| {
+                matches!(
+                    n.kind,
+                    NodeKind::Manual
+                        | NodeKind::Startup
+                        | NodeKind::Interval { .. }
+                        | NodeKind::WindowOpened { .. }
+                        | NodeKind::WindowClosed { .. }
+                        | NodeKind::AppRunning { .. }
+                        | NodeKind::BranchAppRunning { .. }
+                        | NodeKind::Notify { .. }
+                        | NodeKind::SwitchWorkspace { .. }
+                        | NodeKind::SetVolume { .. }
+                        | NodeKind::LaunchApplication { .. }
+                        | NodeKind::WaitWindowOpened { .. }
+                )
+            });
+            if !has_home || !has_desktop {
+                return Err("Hybrid workflow needs both Home Assistant and desktop nodes".into());
+            }
         }
         Ok(order)
     }
@@ -353,11 +570,14 @@ impl Workflow {
         let mut steps = Vec::new();
         let mut warnings = Vec::new();
         let mut active = HashMap::new();
+        let mut variables: HashMap<String, HashMap<String, String>> = HashMap::new();
         let trigger_id = order.first().unwrap().clone();
-        active.insert(trigger_id, true);
+        active.insert(trigger_id.clone(), true);
+        variables.insert(trigger_id, HashMap::new());
         for id in order {
             let kind = &self.nodes.iter().find(|n| n.id == id).unwrap().kind;
             let is_active = active.get(&id).copied().unwrap_or(false);
+            let mut values = variables.remove(&id).unwrap_or_default();
             let mut continue_path = is_active;
             let mut chosen = None;
             let result = match kind {
@@ -402,18 +622,43 @@ impl Workflow {
                         }
                     }
                 }
+                NodeKind::VariableEquals { name, value } => {
+                    if values.get(name) == Some(value) {
+                        "condition true".into()
+                    } else {
+                        continue_path = false;
+                        "condition false".into()
+                    }
+                }
+                NodeKind::SetVariable { name, value } => {
+                    values.insert(name.clone(), value.clone());
+                    "variable set".into()
+                }
                 NodeKind::Parallel => "parallel paths planned".into(),
                 NodeKind::Stop => {
                     continue_path = false;
                     "stop".into()
                 }
                 NodeKind::Delay { seconds } => format!("planned delay: {seconds}s"),
+                NodeKind::Repeat { times } => format!("repeat child path {times} times"),
+                NodeKind::WaitWindowOpened {
+                    class,
+                    timeout_seconds,
+                } => format!("wait for {class} window, up to {timeout_seconds}s"),
+                NodeKind::WaitEntityState {
+                    entity_id,
+                    state,
+                    timeout_seconds,
+                } => format!("wait for {entity_id} = {state}, up to {timeout_seconds}s"),
                 _ => "planned action".into(),
             };
             for edge in self.edges.iter().filter(|edge| edge.from == id) {
+                variables.insert(edge.to.clone(), values.clone());
                 active.insert(
                     edge.to.clone(),
-                    continue_path && chosen.is_none_or(|port| edge.output.as_deref() == Some(port)),
+                    continue_path
+                        && edge.output.as_deref() != Some("error")
+                        && chosen.is_none_or(|port| edge.output.as_deref() == Some(port)),
                 );
             }
             steps.push(DryRunStep {
@@ -430,6 +675,15 @@ fn valid_id(s: &str) -> bool {
         && s.len() <= 80
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn valid_variable_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 fn valid_desktop_id(s: &str) -> bool {
@@ -480,6 +734,8 @@ mod tests {
                 output: None,
             }],
             positions: HashMap::new(),
+            policies: HashMap::new(),
+            groups: Vec::new(),
         };
         let json = serde_json::to_string(&w).unwrap();
         let restored: Workflow = serde_json::from_str(&json).unwrap();
@@ -538,6 +794,8 @@ mod tests {
                 },
             ],
             positions: HashMap::new(),
+            policies: HashMap::new(),
+            groups: Vec::new(),
         };
         let config = w.to_home_assistant().unwrap();
         assert_eq!(config["actions"][0]["action"], "light.turn_on");
@@ -602,6 +860,8 @@ mod tests {
                 },
             ],
             positions: HashMap::new(),
+            policies: HashMap::new(),
+            groups: Vec::new(),
         };
         let restored: Workflow =
             serde_json::from_str(&serde_json::to_string(&workflow).unwrap()).unwrap();
@@ -633,5 +893,82 @@ mod tests {
         let mut invalid = workflow;
         invalid.edges[2].output = Some("true".into());
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn hybrid_owner_variables_and_action_policy() {
+        let mut workflow = Workflow {
+            schema_version: 1,
+            id: "hybrid-test".into(),
+            name: "Hybrid".into(),
+            enabled: true,
+            owner: Owner::HybridDesktop,
+            nodes: vec![
+                Node {
+                    id: "when".into(),
+                    kind: NodeKind::Manual,
+                },
+                Node {
+                    id: "set".into(),
+                    kind: NodeKind::SetVariable {
+                        name: "profile".into(),
+                        value: "game".into(),
+                    },
+                },
+                Node {
+                    id: "if".into(),
+                    kind: NodeKind::VariableEquals {
+                        name: "profile".into(),
+                        value: "game".into(),
+                    },
+                },
+                Node {
+                    id: "then".into(),
+                    kind: NodeKind::SetEntity {
+                        entity_id: "light.office".into(),
+                        turn_on: true,
+                    },
+                },
+            ],
+            edges: vec![
+                Edge {
+                    from: "when".into(),
+                    to: "set".into(),
+                    output: None,
+                },
+                Edge {
+                    from: "set".into(),
+                    to: "if".into(),
+                    output: None,
+                },
+                Edge {
+                    from: "if".into(),
+                    to: "then".into(),
+                    output: None,
+                },
+            ],
+            positions: HashMap::new(),
+            policies: HashMap::from([(
+                "then".into(),
+                ActionPolicy {
+                    retries: 2,
+                    timeout_seconds: 8,
+                },
+            )]),
+            groups: vec![Group {
+                id: "group1".into(),
+                name: "Actions".into(),
+                members: vec!["if".into(), "then".into()],
+                collapsed: false,
+            }],
+        };
+        workflow.validate().unwrap();
+        let report = workflow.dry_run(&DryRunContext::default()).unwrap();
+        assert_eq!(report.steps.last().unwrap().result, "planned action");
+        workflow.owner = Owner::Desktop;
+        assert!(workflow.validate().is_err());
+        workflow.owner = Owner::HybridDesktop;
+        workflow.policies.get_mut("then").unwrap().retries = 4;
+        assert!(workflow.validate().is_err());
     }
 }

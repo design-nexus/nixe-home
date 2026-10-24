@@ -98,7 +98,7 @@ are registered; do not send users to a fabricated or unregistered callback.
   execution owner and retains its own traces; local Activity covers desktop
   runs only.
 
-## Phase 4 graph editor foundation
+## Phase 4 graph editor
 
 - The GTK DrawingArea renders nodes and Bezier connections with Cairo. Native
   GTK controls provide node selection and parameter editing. Dragged positions
@@ -108,13 +108,46 @@ are registered; do not send users to a fabricated or unregistered callback.
   the simple builder cannot represent opens a read-only notice there; canvas
   edits preserve its graph. Dry run walks chosen branches, marks unchosen paths
   skipped, and highlights results on the canvas.
-- `BranchAppRunning`, `Parallel`, `Delay`, and `Stop` are desktop-only node
-  types. The runtime traverses branches recursively and schedules parallel
-  child paths together. Action failure stops that path and marks the run failed.
-- Graphs remain capped at 64 nodes. The current editor does not yet provide
-  grouping, multi-selection, copy/paste, keyboard shortcuts, variables, retry,
-  timeout/error nodes, or live node-by-node progress.
+- `BranchAppRunning`, `Parallel`, `Repeat`, event waits, variables, `Delay`, and
+  `Stop` run in the desktop daemon. Parallel paths run concurrently. Repeat
+  executes its child path at most ten times. Action failure follows a connected
+  `error` edge or marks the path failed.
+- Canvas metadata supports groups and collapsed views. Shift-click selects
+  multiple nodes; a local clipboard copies their internal edges and policies.
+  GTK shortcuts cover select, copy/paste, delete and undo/redo. `RunProgress`
+  and `CancelRun` expose per-node live status through D-Bus. Activity can fetch
+  the same detail after a run. Graphs remain capped at 64 nodes.
 
 Home Assistant source references: [automation config endpoint](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/automation.py),
 [config view validation](https://github.com/home-assistant/core/blob/dev/homeassistant/components/config/view.py),
 [automation services](https://github.com/home-assistant/core/blob/dev/homeassistant/components/automation/services.py).
+
+## Phase 4 and 5 execution decisions
+
+- The saved graph stays a rooted tree. A node has one parent; parallel branches
+  do not rejoin. This avoids executing a shared descendant twice. Variable
+  values flow down a path and fork by value at a parallel or repeat node.
+- Retry and timeout are optional policies on typed action nodes. Only actions
+  with repeatable effects may retry. An `error` edge can handle a failed action;
+  normal edges run only after success. Grouping and positions affect the editor
+  only. The daemon validates them but never uses them to choose an action.
+- `home_assistant` ownership still compiles only to HA-supported automation
+  configuration. `hybrid_desktop` ownership is required when a workflow mixes
+  HA entities with desktop triggers or actions. The daemon is the sole executor
+  of these hybrid workflows and cannot run while its user session is offline.
+- Hybrid HA state triggers use HA's authenticated WebSocket `state_changed`
+  subscription. The daemon reads the existing URL from Home settings and the
+  credential from Secret Service. Neither goes into workflow JSON or logs.
+- A stable HA event identity is derived from the event's context and timestamp
+  with its entity ID; SQLite receipts suppress duplicate handling after reconnect.
+  The daemon accepts events at most once, marks interrupted runs after a crash,
+  and does not replay missed HA events because the live WebSocket API has no
+  replay cursor. Future events resume after reconnection. Home-critical behavior
+  must stay in HA.
+- REST actions use the HA service endpoint and only allow typed entity on/off
+  and scene activation. No arbitrary domain/service or shell command is accepted.
+  Concurrent execution and rate limits prevent local loops; error edges can
+  handle provider failures without hiding the failed node in run history.
+
+References: [Home Assistant WebSocket API](https://contributors.home-assistant.io/core/internals/websocket-api/),
+[Home Assistant REST API](https://contributors.home-assistant.io/core/internals/rest-api/).

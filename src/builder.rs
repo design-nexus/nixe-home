@@ -251,7 +251,11 @@ fn section(content: &gtk::Box, title: &str, widget: &impl IsA<gtk::Widget>) {
 }
 
 fn existing_simple(workflow: &Workflow) -> bool {
-    workflow.validate().is_ok()
+    workflow.owner != Owner::HybridDesktop
+        && workflow.policies.is_empty()
+        && workflow.groups.is_empty()
+        && workflow.edges.iter().all(|e| e.output.is_none())
+        && workflow.validate().is_ok()
         && workflow
             .nodes
             .iter()
@@ -653,6 +657,8 @@ pub fn present(
                 nodes,
                 edges,
                 positions: HashMap::new(),
+                policies: HashMap::new(),
+                groups: Vec::new(),
             };
             workflow.validate()?;
             if owner == Owner::HomeAssistant && (home.base.is_empty() || home.token.is_empty()) {

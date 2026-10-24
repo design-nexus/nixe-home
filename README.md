@@ -22,11 +22,15 @@ the smart-home backend.
   triggers include manual, startup, intervals, and Hyprland window open/close;
   actions include notifications, desktop application launch, workspace switching,
   and volume.
-- Edit desktop graphs on a native GTK canvas with drag, pan, zoom, node inspector,
-  connections, auto layout, undo/redo, and dry-run path highlighting. Desktop
-  graphs can branch on an application, run parallel paths, delay, and stop.
+- Edit graphs on a native GTK canvas with palette drag and drop, pan, zoom,
+  multi-selection, grouping, copy/paste, undo/redo, keyboard shortcuts, and
+  node inspection. Desktop graphs can branch, run parallel paths, repeat, wait
+  for events, use variables, delay, and handle action failures. Dry and live
+  tests highlight nodes; live tests can be canceled.
+- Build desktop-owned hybrid automations that react to Home Assistant state
+  changes or invoke supported Home Assistant entity and scene actions.
 
-The current build does not yet support cameras, robot controls, or hybrid workflows.
+The current build does not yet support cameras or robot controls.
 OAuth is deferred until the app has a registered website redirect. See
 [the architecture notes](docs/ARCHITECTURE.md).
 
@@ -74,7 +78,21 @@ Open **Canvas** on an automation to edit its graph. For a new graph, choose
 **Advanced canvas**. Select a node, use **Connect to node…**, then click the target.
 For a branch, the first connection is `true` and the second is `false`; remove
 an output in the inspector to rewire it. The inspector edits node parameters.
-Saved canvas positions are optional JSON metadata; the daemon ignores them.
+Drag **Add node** into the canvas to place the selected node. Shift-click nodes
+to select several; drag them together, copy/paste with Ctrl+C/V, or group them
+in the inspector. Ctrl+Z/Y undo and redo; Delete removes selected nodes.
+Set action timeouts and permitted retries in the inspector. Connect an action's
+`error` output to a handler path. **Live test** runs the draft without saving it
+and shows node progress. Saved canvas positions and groups are editor metadata.
+
+Choose **Hybrid automation** for a new desktop-owned cross-system graph. A
+desktop trigger can turn a supported HA entity on or off or activate a scene;
+an HA entity state trigger can run desktop actions. Home Assistant-only graphs
+remain HA-owned. Hybrid HA events resume after reconnect, but events missed
+while the desktop is offline are not replayed. Keep home-critical behavior in
+Home Assistant. Secret Service supplies the daemon's credential; workflows
+never contain it. Activity records desktop and hybrid runs, including node
+results and retry details.
 
 The service runs as the current user with no root privileges. It only invokes
 allowlisted commands with separate arguments, enforces action timeouts, and records

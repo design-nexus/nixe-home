@@ -14,19 +14,19 @@
 - **Phase 3:** Native When / If / Then builder for desktop and a faithful Home
   Assistant subset, optional condition evaluation, multiple actions, dry run,
   live test, edit, enable/disable, and owner-based execution routing.
-- **Phase 4 (in progress):** Desktop branch/parallel/delay/stop graph execution;
-  native GTK canvas with persisted positions, pan/zoom, node inspector,
-  connection editing, auto layout, undo/redo, and dry-run highlighting.
+- **Phase 4:** Native GTK graph editor with palette drag/drop, pan/zoom, snap,
+  auto layout, selection, copy/paste, groups, undo/redo, shortcuts, inspector,
+  branching, parallel paths, repeat, event waits, variables, delays, action
+  policies, error paths, dry run, live progress, cancellation and Activity detail.
+- **Phase 5:** Explicit desktop-owned hybrid workflows, HA event subscriptions,
+  typed HA REST actions and state conditions, reconnection, persisted event
+  receipts, duplicate suppression, and loop rate limits.
 
 ## Next
 
-1. **Finish Phase 4:** Add multi-selection, copy/paste, keyboard shortcuts,
-   groups, variables, retry and error nodes, and live execution highlighting.
-2. **Phase 5:** Define hybrid workflow ownership, durable event IDs, duplicate
-   suppression and offline replay rules before cross-system execution.
-3. **Phase 6:** Capability-driven camera, robot and energy views from Home
+1. **Phase 6:** Capability-driven camera, robot and energy views from Home
    Assistant entities.
-4. **Phase 7:** Optional assistant integration, accessibility, packaging and
+2. **Phase 7:** Optional assistant integration, accessibility, packaging and
    documentation polish.
 
 ## Current limits
@@ -40,6 +40,10 @@
   is connected. Hyprland event triggers need an active user session.
 - Interval schedules start anew when the service starts and do not replay missed
   executions. Home-critical automation remains in Home Assistant.
-- Hybrid workflows, camera previews, and robot controls remain in later phases.
-  Home Assistant execution history stays
-  in HA's traces; the Activity page currently shows desktop runs.
+- Hybrid workflows are desktop-owned and at-most-once for received HA events.
+  The HA live WebSocket stream cannot replay events missed while Nixe Home or
+  the desktop is offline. A receipt written immediately before a run prevents
+  replay after a crash, so a crash at that point can lose the event. Keep
+  home-critical automation in HA.
+- Camera previews and robot controls remain in later phases. Home Assistant
+  execution history stays in HA's traces; Activity shows desktop and hybrid runs.

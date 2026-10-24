@@ -140,6 +140,8 @@ mod tests {
                 output: None,
             }],
             positions: Default::default(),
+            policies: Default::default(),
+            groups: Default::default(),
         };
         save(&format!("http://{address}"), "test-token", &workflow)
             .await
