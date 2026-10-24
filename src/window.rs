@@ -5,7 +5,11 @@ use crate::{
     prefs, theme,
 };
 use gtk::prelude::*;
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
@@ -67,6 +71,8 @@ impl Section {
 struct Ui {
     window: gtk::ApplicationWindow,
     stack: gtk::Stack,
+    content_scroll: gtk::ScrolledWindow,
+    scroll_restore: Rc<Cell<Option<f64>>>,
     nav: Vec<(Section, gtk::Button)>,
     crumb: gtk::Label,
     status: gtk::Label,
@@ -207,6 +213,8 @@ pub fn present(app: &gtk::Application) {
     let ui = Rc::new(RefCell::new(Ui {
         window: window.clone(),
         stack,
+        content_scroll: content,
+        scroll_restore: Rc::new(Cell::new(None)),
         nav,
         crumb,
         status,
@@ -496,6 +504,7 @@ fn start_connection(ui: &Rc<RefCell<Ui>>, base: String, token: String) {
 }
 
 fn render_entities(ui: &mut Ui) {
+    preserve_home_scroll(ui);
     clear_box(&ui.entities);
     clear_box(&ui.overview);
     let overview_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -561,6 +570,38 @@ fn render_entities(ui: &mut Ui) {
                 .append(&entity_row(entity, &ui.base, &ui.token, &ui.window));
         }
     }
+}
+
+fn preserve_home_scroll(ui: &Ui) {
+    let Some(page) = ui.stack.visible_child_name() else {
+        return;
+    };
+    if !matches!(page.as_str(), "home" | "overview") || ui.scroll_restore.get().is_some() {
+        return;
+    }
+    let saved = ui.content_scroll.vadjustment().value();
+    ui.scroll_restore.set(Some(saved));
+    let pending = ui.scroll_restore.clone();
+    let stack = ui.stack.clone();
+    let frames = Cell::new(0u8);
+    ui.content_scroll.add_tick_callback(move |scroll, _| {
+        if stack.visible_child_name().as_deref() != Some(page.as_str()) {
+            pending.set(None);
+            return gtk::glib::ControlFlow::Break;
+        }
+        if let Some(value) = pending.get() {
+            let adjustment = scroll.vadjustment();
+            let maximum = (adjustment.upper() - adjustment.page_size()).max(adjustment.lower());
+            adjustment.set_value(value.clamp(adjustment.lower(), maximum));
+        }
+        frames.set(frames.get() + 1);
+        if frames.get() >= 2 {
+            pending.set(None);
+            gtk::glib::ControlFlow::Break
+        } else {
+            gtk::glib::ControlFlow::Continue
+        }
+    });
 }
 
 fn section_heading(title: &str) -> gtk::Label {
