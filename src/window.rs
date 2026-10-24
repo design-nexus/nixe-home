@@ -532,7 +532,7 @@ fn render_entities(ui: &mut Ui) {
     } else {
         for entity in favs {
             ui.overview
-                .append(&entity_row(&entity, &ui.base, &ui.token));
+                .append(&entity_row(&entity, &ui.base, &ui.token, &ui.window));
         }
     }
     let note = gtk::Label::new(Some("Live state changes arrive from Home Assistant."));
@@ -554,7 +554,8 @@ fn render_entities(ui: &mut Ui) {
         group.set_margin_top(8);
         ui.entities.append(&group);
         for entity in entities {
-            ui.entities.append(&entity_row(entity, &ui.base, &ui.token));
+            ui.entities
+                .append(&entity_row(entity, &ui.base, &ui.token, &ui.window));
         }
     }
 }
@@ -573,7 +574,12 @@ fn metric_card(label: &str, value: &str) -> gtk::Widget {
     card.upcast()
 }
 
-fn entity_row(entity: &Entity, base: &str, token: &str) -> gtk::Widget {
+fn entity_row(
+    entity: &Entity,
+    base: &str,
+    token: &str,
+    parent: &gtk::ApplicationWindow,
+) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.add_css_class("home-card");
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -639,35 +645,33 @@ fn entity_row(entity: &Entity, base: &str, token: &str) -> gtk::Widget {
         let e = entity.clone();
         let base = base.to_string();
         let token = token.to_string();
-        let parent = UI.with(|slot| slot.borrow().as_ref().map(|ui| ui.borrow().window.clone()));
+        let parent = parent.clone();
         button.connect_clicked(move |_| {
             let e = e.clone();
             let base = base.clone();
             let token = token.clone();
             if e.domain() == "lock" {
-                if let Some(parent) = parent.as_ref() {
-                    let operation = if e.state == "locked" {
-                        "Unlock"
-                    } else {
-                        "Lock"
-                    };
-                    let alert = gtk::AlertDialog::builder()
-                        .message(format!("{operation} {}?", e.name()))
-                        .detail("Home Assistant will send this command to the lock.")
-                        .buttons(["Cancel", operation])
-                        .cancel_button(0)
-                        .default_button(0)
-                        .build();
-                    alert.choose(
-                        Some(parent),
-                        None::<&gtk::gio::Cancellable>,
-                        move |result| {
-                            if result == Ok(1) {
-                                call_home_service(base, token, e);
-                            }
-                        },
-                    );
-                }
+                let operation = if e.state == "locked" {
+                    "Unlock"
+                } else {
+                    "Lock"
+                };
+                let alert = gtk::AlertDialog::builder()
+                    .message(format!("{operation} {}?", e.name()))
+                    .detail("Home Assistant will send this command to the lock.")
+                    .buttons(["Cancel", operation])
+                    .cancel_button(0)
+                    .default_button(0)
+                    .build();
+                alert.choose(
+                    Some(&parent),
+                    None::<&gtk::gio::Cancellable>,
+                    move |result| {
+                        if result == Ok(1) {
+                            call_home_service(base, token, e);
+                        }
+                    },
+                );
             } else {
                 call_home_service(base, token, e);
             }
