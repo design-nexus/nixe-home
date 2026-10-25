@@ -4,6 +4,12 @@ Nixe Home is a native Linux frontend for an existing Home Assistant instance, wi
 separate desktop automation engine. Home Assistant remains
 the smart-home backend.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-home/main/install.sh | bash
+```
+
 ## Current functionality
 
 - Connect to Home Assistant with a long-lived access token.
