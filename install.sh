@@ -12,9 +12,11 @@ if [[ -z ${BASH_SOURCE[0]:-} ]]; then
 fi
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-command -v cargo >/dev/null || { echo "Rust/Cargo is required." >&2; exit 1; }
-
-cargo build --release --locked --manifest-path "$root/Cargo.toml"
+# A release archive (.prebuilt) brings its binaries.
+if [[ ! -f $root/.prebuilt ]]; then
+  command -v cargo >/dev/null || { echo "Rust/Cargo is required." >&2; exit 1; }
+  cargo build --release --locked --manifest-path "$root/Cargo.toml"
+fi
 bin_dir="${XDG_BIN_HOME:-$HOME/.local/bin}"
 share_dir="${XDG_DATA_HOME:-$HOME/.local/share}"
 install -d "$bin_dir"

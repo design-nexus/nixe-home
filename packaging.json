@@ -1,0 +1,19 @@
+{
+  "application": "home",
+  "directory": ".",
+  "packages": [
+    "nixe-home"
+  ],
+  "manifest": "Cargo.toml",
+  "prepare": [],
+  "binaries": [],
+  "test_commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "nixe-home"
+    ]
+  ]
+}
