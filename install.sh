@@ -3,10 +3,10 @@ set -euo pipefail
 # Piped from curl (`curl -fsSL …/install.sh | bash`): no checkout here, so fetch
 # the source and run its installer from there.
 if [[ -z ${BASH_SOURCE[0]:-} ]]; then
-  command -v git >/dev/null || { echo "Git is needed to install nixe-home." >&2; exit 1; }
+  command -v git >/dev/null || { echo "Git is needed to install nyx-home." >&2; exit 1; }
   work=$(mktemp -d)
   trap 'rm -rf "$work"' EXIT
-  git clone -q --depth 1 https://github.com/design-nexus/nixe-home.git "$work/src"
+  git clone -q --depth 1 https://github.com/design-nexus/nyx-home.git "$work/src"
   bash "$work/src/install.sh" "$@"
   exit
 fi
@@ -26,18 +26,18 @@ install_binary() {
   install -m755 "$source" "$staged"
   mv -f "$staged" "$target"
 }
-install_binary "$root/target/release/nixe-home" "$bin_dir/nixe-home"
-install_binary "$root/target/release/nixe-homed" "$bin_dir/nixe-homed"
-install_binary "$root/target/release/nixe-homectl" "$bin_dir/nixe-homectl"
-install -Dm644 "$root/data/io.github.design_nexus.nixe.Home.desktop" \
-  "$share_dir/applications/io.github.design_nexus.nixe.Home.desktop"
-install -Dm644 "$root/data/icons/io.github.design_nexus.nixe.Home.svg" \
-  "$share_dir/icons/hicolor/scalable/apps/io.github.design_nexus.nixe.Home.svg"
-install -Dm644 "$root/data/nixe-homed.service" "$share_dir/systemd/user/nixe-homed.service"
+install_binary "$root/target/release/nyx-home" "$bin_dir/nyx-home"
+install_binary "$root/target/release/nyx-homed" "$bin_dir/nyx-homed"
+install_binary "$root/target/release/nyx-homectl" "$bin_dir/nyx-homectl"
+install -Dm644 "$root/data/io.github.design_nexus.nyx.Home.desktop" \
+  "$share_dir/applications/io.github.design_nexus.nyx.Home.desktop"
+install -Dm644 "$root/data/icons/io.github.design_nexus.nyx.Home.svg" \
+  "$share_dir/icons/hicolor/scalable/apps/io.github.design_nexus.nyx.Home.svg"
+install -Dm644 "$root/data/nyx-homed.service" "$share_dir/systemd/user/nyx-homed.service"
 systemctl --user daemon-reload
-systemctl --user enable nixe-homed.service
-systemctl --user start nixe-homed.service
+systemctl --user enable nyx-homed.service
+systemctl --user start nyx-homed.service
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t "$share_dir/icons/hicolor" || true
 fi
-printf 'Installed Home to %s\n' "$bin_dir/nixe-home"
+printf 'Installed Home to %s\n' "$bin_dir/nyx-home"

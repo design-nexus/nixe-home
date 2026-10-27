@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use nixe_home::automation::{
+use nyx_home::automation::{
     BUS, DryRunContext, Edge, INTERFACE, Node, NodeKind, Owner, PATH, Workflow,
 };
 use std::{cell::RefCell, collections::HashMap, rc::Rc};

@@ -1,6 +1,6 @@
 use crate::builder::HomeContext;
 use gtk::{cairo, prelude::*};
-use nixe_home::automation::{
+use nyx_home::automation::{
     ActionPolicy, BUS, DryRunContext, Edge, Group, INTERFACE, Node, NodeKind, Owner, PATH, Point,
     Workflow,
 };
@@ -264,7 +264,7 @@ fn group_bounds(workflow: &Workflow, members: &[String]) -> Option<(f64, f64, f6
 fn collapsed_group<'a>(
     workflow: &'a Workflow,
     id: &str,
-) -> Option<&'a nixe_home::automation::Group> {
+) -> Option<&'a nyx_home::automation::Group> {
     workflow
         .groups
         .iter()
@@ -1303,7 +1303,7 @@ pub fn present(
     drag_source.connect_prepare(move |_, _, _| {
         let name = KINDS.get(palette_for_drag.selected() as usize)?;
         Some(gtk::gdk::ContentProvider::for_value(
-            &format!("nixe-home-node:{name}").to_value(),
+            &format!("nyx-home-node:{name}").to_value(),
         ))
     });
     add.add_controller(drag_source);
@@ -1316,7 +1316,7 @@ pub fn present(
         let Ok(text) = value.get::<String>() else {
             return false;
         };
-        let Some(name) = text.strip_prefix("nixe-home-node:") else {
+        let Some(name) = text.strip_prefix("nyx-home-node:") else {
             return false;
         };
         let (px, py, zoom) = {

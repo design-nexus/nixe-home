@@ -1,7 +1,7 @@
 use crate::prefs;
 
 pub fn install() {
-    nixe_theme::install(nixe_theme::Style {
+    nyx_theme::install(nyx_theme::Style {
         window_class: "home-window",
         base_skip: &[],
         css: include_str!("style.css"),
@@ -9,7 +9,7 @@ pub fn install() {
         extra_colors: None,
         prefs: || {
             let p = prefs::get();
-            nixe_theme::ThemePrefs {
+            nyx_theme::ThemePrefs {
                 mode: p.mode,
                 theme: p.theme,
                 glow: p.glow,

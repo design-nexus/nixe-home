@@ -106,8 +106,8 @@ pub fn present(app: &gtk::Application) {
         .build();
     window.add_css_class("home-window");
     window.set_titlebar(Some(&gtk::Box::new(gtk::Orientation::Horizontal, 0)));
-    window.set_icon_name(Some("io.github.design_nexus.nixe.Home"));
-    nixe_ui::keys::install(&window, nixe_ui::keys::Common::default());
+    window.set_icon_name(Some("io.github.design_nexus.nyx.Home"));
+    nyx_ui::keys::install(&window, nyx_ui::keys::Common::default());
 
     let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 10);

@@ -1,13 +1,13 @@
 # Home
 
-Nixe Home is a native Linux frontend for an existing Home Assistant instance, with a
+Nyx Home is a native Linux frontend for an existing Home Assistant instance, with a
 separate desktop automation engine. Home Assistant remains
 the smart-home backend.
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/design-nexus/nixe-home/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-home/main/install.sh | bash
 ```
 
 ## Current functionality
@@ -55,8 +55,8 @@ cargo build --release --locked
 ./install.sh
 ```
 
-This installs `nixe-home`, `nixe-homed`, `nixe-homectl`, a launcher entry, icon, and
-an enabled systemd user service under `~/.local`. It does not open the app. To run it, use `nixe-home` or select **Home** in
+This installs `nyx-home`, `nyx-homed`, `nyx-homectl`, a launcher entry, icon, and
+an enabled systemd user service under `~/.local`. It does not open the app. To run it, use `nyx-home` or select **Home** in
 the application launcher.
 
 ## Home dashboard and devices
@@ -77,7 +77,7 @@ their sensor units and are not added across incompatible units.
 
 Open **Home** and choose **Connect Home Assistant**. Enter the base URL (for example
 `http://homeassistant.local:8123`) and a long-lived access token created in your
-Home Assistant profile. Nixe Home stores the token in Secret Service. If your keyring
+Home Assistant profile. Nyx Home stores the token in Secret Service. If your keyring
 is locked or unavailable, unlock or enable it before connecting.
 
 Use HTTPS when connecting over an untrusted network. Home Assistant authentication
@@ -88,14 +88,14 @@ and service permissions remain managed by Home Assistant.
 The Automations page provides desktop and Home Assistant builders. Home Assistant
 automations currently support an entity state trigger, an optional entity state
 condition, and on/off or scene actions. Home Assistant executes these workflows;
-the desktop service keeps their editable Nixe graph but never runs them.
+the desktop service keeps their editable Nyx graph but never runs them.
 
-The service also accepts versioned desktop workflow JSON through `nixe-homectl save FILE` for supported
-desktop triggers and actions. Use `nixe-homectl list`, `run ID`, `enable ID`,
+The service also accepts versioned desktop workflow JSON through `nyx-homectl save FILE` for supported
+desktop triggers and actions. Use `nyx-homectl list`, `run ID`, `enable ID`,
 `disable ID`, `history`, `status`, and `dry-run FILE [CONTEXT]` to manage or inspect
 desktop workflows while the GUI is closed.
 An [example workflow](examples/manual-notification.json) can be imported with
-`nixe-homectl save examples/manual-notification.json`.
+`nyx-homectl save examples/manual-notification.json`.
 The workflow file has `schema_version`, `id`, `name`, `enabled`, `nodes`, and `edges`.
 Each node has an `id` and a `type`; edges connect `from` to `to`. The simple builder supports
 one trigger, an optional condition, and a linear chain of actions. Workflow validation rejects
@@ -123,7 +123,7 @@ results and retry details.
 The service runs as the current user with no root privileges. It only invokes
 allowlisted commands with separate arguments, enforces action timeouts, and records
 completion or failure. Desktop automation data is stored at
-`~/.local/share/nixe-home/automation.db`. Run `systemctl --user status nixe-homed`
+`~/.local/share/nyx-home/automation.db`. Run `systemctl --user status nyx-homed`
 to inspect the service. Hyprland event triggers require an active Hyprland session.
 
 ## Development
@@ -133,5 +133,5 @@ cargo check --locked
 cargo test --locked
 ```
 
-The app uses the pinned Nixe `nixe-core` and `nixe-design` crates. See
+The app uses the pinned Nyx `nyx-core` and `nyx-design` crates. See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries and current limitations.

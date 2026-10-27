@@ -2,8 +2,8 @@
 Type=Application
 Name=Home
 Comment=Home Assistant and desktop automation
-Exec=nixe-home
-Icon=io.github.design_nexus.nixe.Home
+Exec=nyx-home
+Icon=io.github.design_nexus.nyx.Home
 Terminal=false
 Categories=Utility;Settings;
-StartupWMClass=io.github.design_nexus.nixe.Home
+StartupWMClass=io.github.design_nexus.nyx.Home

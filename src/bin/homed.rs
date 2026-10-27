@@ -1,6 +1,6 @@
 use futures_util::future::{BoxFuture, join_all};
-use nixe_home::automation::{BUS, DryRunContext, NodeKind, Owner, PATH, Workflow};
-use nixe_home::hybrid::{HybridClient, StateEvent};
+use nyx_home::automation::{BUS, DryRunContext, NodeKind, Owner, PATH, Workflow};
+use nyx_home::hybrid::{HybridClient, StateEvent};
 use rusqlite::{Connection, params};
 use std::{
     collections::{HashMap, HashSet},
@@ -624,7 +624,7 @@ struct Service {
     engine: Engine,
 }
 
-#[interface(name = "io.github.design_nexus.nixe.Home.Automation1")]
+#[interface(name = "io.github.design_nexus.nyx.Home.Automation1")]
 impl Service {
     fn status(&self) -> String {
         let watching = self.engine.list().is_ok_and(|workflows| {
@@ -865,14 +865,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "nixe_homed=info".into()),
+                .unwrap_or_else(|_| "nyx_homed=info".into()),
         )
         .init();
-    nixe_core::app::init(nixe_core::app::App {
-        slug: "nixe-home",
+    nyx_core::app::init(nyx_core::app::App {
+        slug: "nyx-home",
         name: "Home",
     });
-    let dir = nixe_core::paths::data_dir();
+    let dir = nyx_core::paths::data_dir();
     std::fs::create_dir_all(&dir)?;
     let engine = Engine {
         db: dir.join("automation.db"),
@@ -924,7 +924,7 @@ mod tests {
     #[test]
     fn event_receipts_survive_engine_recreation() {
         let path =
-            std::env::temp_dir().join(format!("nixe-home-receipts-{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("nyx-home-receipts-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).unwrap();
         let db = path.join("automation.db");
         let make_engine = || Engine {

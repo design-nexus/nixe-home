@@ -2,7 +2,7 @@
   "application": "home",
   "directory": ".",
   "packages": [
-    "nixe-home"
+    "nyx-home"
   ],
   "manifest": "Cargo.toml",
   "prepare": [],
@@ -13,7 +13,7 @@
       "test",
       "--locked",
       "-p",
-      "nixe-home"
+      "nyx-home"
     ]
   ]
 }

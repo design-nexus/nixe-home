@@ -2,7 +2,7 @@
 
 ## Completed
 
-- **Phase 0:** Inspected Nixe repositories and conventions; chose a standalone
+- **Phase 0:** Inspected Nyx repositories and conventions; chose a standalone
   repository, pinned shared crates, Home Assistant ownership, Secret Service
   credentials, and a native GTK application. See `ARCHITECTURE.md`.
 - **Phase 1:** GTK shell, theme, connection dialog, secure token storage, Home
@@ -42,7 +42,7 @@
 - Interval schedules start anew when the service starts and do not replay missed
   executions. Home-critical automation remains in Home Assistant.
 - Hybrid workflows are desktop-owned and at-most-once for received HA events.
-  The HA live WebSocket stream cannot replay events missed while Nixe Home or
+  The HA live WebSocket stream cannot replay events missed while Nyx Home or
   the desktop is offline. A receipt written immediately before a run prevents
   replay after a crash, so a crash at that point can lose the event. Keep
   home-critical automation in HA.

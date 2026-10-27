@@ -4,7 +4,7 @@ After=graphical-session.target
 PartOf=graphical-session.target
 
 [Service]
-ExecStart=%h/.local/bin/nixe-homed
+ExecStart=%h/.local/bin/nyx-homed
 Restart=on-failure
 RestartSec=3
 UMask=0077

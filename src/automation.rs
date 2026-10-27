@@ -2,9 +2,9 @@ use petgraph::{algo::is_cyclic_directed, graphmap::DiGraphMap};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-pub const BUS: &str = "io.github.design_nexus.nixe.Home.Automation";
-pub const PATH: &str = "/io/github/design_nexus/nixe/Home/Automation";
-pub const INTERFACE: &str = "io.github.design_nexus.nixe.Home.Automation1";
+pub const BUS: &str = "io.github.design_nexus.nyx.Home.Automation";
+pub const PATH: &str = "/io/github/design_nexus/nyx/Home/Automation";
+pub const INTERFACE: &str = "io.github.design_nexus.nyx.Home.Automation1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

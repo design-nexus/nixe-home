@@ -1,4 +1,4 @@
-use nixe_home::automation::{BUS, DryRunContext, INTERFACE, Owner, PATH, Workflow};
+use nyx_home::automation::{BUS, DryRunContext, INTERFACE, Owner, PATH, Workflow};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         _ => {
             eprintln!(
-                "Usage: nixe-homectl status|list|history|save FILE|dry-run FILE [CONTEXT]|run ID|enable ID|disable ID|delete ID"
+                "Usage: nyx-homectl status|list|history|save FILE|dry-run FILE [CONTEXT]|run ID|enable ID|disable ID|delete ID"
             );
             std::process::exit(2);
         }

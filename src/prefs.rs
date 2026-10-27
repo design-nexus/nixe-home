@@ -1,4 +1,4 @@
-use nixe_theme::ThemeMode;
+use nyx_theme::ThemeMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,4 +43,4 @@ impl Default for Prefs {
     }
 }
 
-nixe_core::prefs_store!(Prefs);
+nyx_core::prefs_store!(Prefs);

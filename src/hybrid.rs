@@ -34,7 +34,7 @@ struct ConnectionPrefs {
 
 impl HybridClient {
     pub async fn load() -> Result<Self, String> {
-        let settings = std::fs::read_to_string(nixe_core::paths::prefs_file())
+        let settings = std::fs::read_to_string(nyx_core::paths::prefs_file())
             .map_err(|_| "Connect Home Assistant in Home first".to_string())?;
         let prefs: ConnectionPrefs =
             toml::from_str(&settings).map_err(|_| "Home settings could not be read".to_string())?;
@@ -55,7 +55,7 @@ impl HybridClient {
                 .args([
                     "lookup",
                     "service",
-                    "nixe-home",
+                    "nyx-home",
                     "account",
                     "home-assistant",
                 ])

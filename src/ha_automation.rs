@@ -1,4 +1,4 @@
-use nixe_home::automation::Workflow;
+use nyx_home::automation::Workflow;
 
 pub async fn save(base: &str, token: &str, workflow: &Workflow) -> Result<(), String> {
     let config = workflow.to_home_assistant()?;
@@ -68,7 +68,7 @@ pub async fn control(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nixe_home::automation::{Edge, Node, NodeKind, Owner};
+    use nyx_home::automation::{Edge, Node, NodeKind, Owner};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]

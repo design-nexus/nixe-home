@@ -3,7 +3,7 @@ use crate::{
     canvas,
 };
 use gtk::prelude::*;
-use nixe_home::automation::{BUS, Edge, INTERFACE, Node, NodeKind, Owner, PATH, Workflow};
+use nyx_home::automation::{BUS, Edge, INTERFACE, Node, NodeKind, Owner, PATH, Workflow};
 use std::rc::Rc;
 
 pub fn page(section: &str) -> gtk::Box {
@@ -168,7 +168,7 @@ pub fn refresh(page: gtk::Box, section: &'static str, home: HomeContext) {
             Ok(Err(e)) => {
                 let box_ = card();
                 box_.append(&label(&format!("Desktop service unavailable: {e}")));
-                box_.append(&label("Check the nixe-homed user service."));
+                box_.append(&label("Check the nyx-homed user service."));
                 page.append(&box_);
             }
             Err(_) => {}

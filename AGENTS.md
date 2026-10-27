@@ -1,12 +1,12 @@
-# Nixe Home
+# Nyx Home
 
 Native GTK 4 application for Home Assistant and Linux desktop automation.
 
-- Use the public, pinned `nixe-core` and `nixe-design` crates. Do not import another
+- Use the public, pinned `nyx-core` and `nyx-design` crates. Do not import another
   application's internals.
-- Preserve app identity `io.github.design_nexus.nixe.Home` and user-facing name
+- Preserve app identity `io.github.design_nexus.nyx.Home` and user-facing name
   `Home`.
-- Reuse Nixe theme tokens, widgets, icons and shortcuts. Nixe Home uses ordinary
+- Reuse Nyx theme tokens, widgets, icons and shortcuts. Nyx Home uses ordinary
   sans-serif interface text; technical identifiers and values may use monospace.
 - Home Assistant is authoritative for home data and home-critical automations.
 - Never write credentials to TOML, SQLite, logs, argv or environment files. Use

@@ -3,14 +3,14 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-const SERVICE: &str = "nixe-home";
+const SERVICE: &str = "nyx-home";
 const ACCOUNT: &str = "home-assistant";
 
 pub fn store(token: &str) -> Result<(), String> {
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=Home Assistant (Nixe Home)",
+            "--label=Home Assistant (Nyx Home)",
             "service",
             SERVICE,
             "account",
