@@ -64,14 +64,24 @@ The interface moved to Nyx Design 2.0:
   foot, toasts, and the suite's settings card. There is no status bar; keyboard
   shortcuts are on F1 and in Settings → About.
 - **Overview:** useful summary cards (lights on, open doors and windows, people
-  home, indoor temperature, device health), favorites as live tiles, and
-  camera, robot, energy and health sections shown only when there is data.
-  Sections are reordered and hidden in place.
-- **Rooms** (formerly "Home"): device tiles grouped by area with area chips and
-  search. Tiles update in place instead of rebuilding the page on every event,
-  and have controls that fit the device: switches, brightness, target
-  temperature, cover and media buttons, a two-click unlock, robot commands and
-  camera stills. Diagnostic and hidden entities are left out unless asked for.
+  home, indoor temperature, device health), favorite devices, a link to the
+  cameras, and robot, energy and health sections shown only when there is data.
+  Sections are reordered and hidden in place. Favorites saved as entities move
+  to their devices.
+- **Rooms** (formerly "Home"): one card per device in sections by type on a
+  unit grid (cards 1, 2 or 4 units each way; sections side by side), with
+  colored scene tiles, room chips and search. Arrange mode drags, moves and
+  resizes cards and reorders sections; the layout is saved. Light group cards for
+  Home Assistant groups and for each room's lights; groups are made, changed and
+  deleted from Home. Devices can be renamed, moved to another area, and hidden
+  in Nyx Home; a group can hide its lights. Cards update in place and show what matters for
+  each kind: thermostat readout, mode, setpoints and fan; light brightness and
+  color swatch; camera still and indicators; robot commands and a map button;
+  media, purifier, security, lock, cover, switch and sensor cards. Each kind has
+  its own color from the theme. A details popup holds every other entity of the
+  device. Diagnostic and hidden entities are left out unless asked for.
+- **Cameras:** every camera's last still by room, with the security mode. Stills
+  never refresh on their own; a viewer window zooms, pans and refreshes them.
 - **Automations:** one New automation chooser that explains where each kind
   runs; rows with an enabled switch and a menu (edit, canvas, run, delete).
 - **Activity:** automation names, status with icon and text, relative times,
@@ -89,7 +99,7 @@ The interface moved to Nyx Design 2.0:
 
 Accessibility: icon buttons and switches have accessible names, form labels
 are linked to their fields, status is never shown by color alone, Reduce motion
-turns animations off, tiles work from the keyboard (arrows, Enter or Space,
+turns animations off, cards work from the keyboard (arrows, Enter or Space,
 Shift+F10 for details), the canvas can be walked with Tab and moved with the
 arrow keys, and F1 lists every shortcut.
 
@@ -101,8 +111,7 @@ also removes settings, automations and the token).
 ## Next
 
 1. Optional assistant integration.
-2. Live camera streams (HLS/WebRTC) and vendor-specific robot commands.
-3. Target temperature ranges for `heat_cool` thermostats.
+2. WebRTC (go2rtc) for lower-latency live video; HLS is used now.
 
 ## Current limits
 
@@ -118,8 +127,9 @@ also removes settings, automations and the token).
   The HA WebSocket stream cannot replay events missed while the desktop is
   offline. A receipt is written just before a run starts, so a crash at that
   moment can lose the event.
-- Camera previews are still images loaded on request. Vacuum maps appear only
-  if Home Assistant exposes a map image entity on the vacuum's device.
+- Camera previews are Home Assistant's last stills, loaded once per session.
+  Robot maps appear only if Home Assistant exposes a map image or camera entity
+  on the robot's device.
 - Home Assistant execution history stays in HA's traces; Activity shows desktop
   and hybrid runs.
 - The canvas draws with Cairo; its steps are reachable by keyboard and

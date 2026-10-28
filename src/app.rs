@@ -1,7 +1,8 @@
 //! The window: header, sidebar, pages and status bar, toasts and keys, and the
 //! Home Assistant state every page reads.
 use crate::{
-    activity, automations, connection, connections, ha, overview, prefs, rooms, rt, settings, theme,
+    activity, automations, cameras, cards, connection, connections, ha, overview, prefs, rooms, rt,
+    settings, theme,
 };
 use gtk::{gdk, glib, prelude::*};
 use nyx_ui::{chrome, widgets};
@@ -16,15 +17,17 @@ use std::{
 pub enum Section {
     Overview,
     Rooms,
+    Cameras,
     Automations,
     Activity,
     Connections,
 }
 
 impl Section {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Overview,
         Self::Rooms,
+        Self::Cameras,
         Self::Automations,
         Self::Activity,
         Self::Connections,
@@ -33,6 +36,7 @@ impl Section {
         match self {
             Self::Overview => "overview",
             Self::Rooms => "rooms",
+            Self::Cameras => "cameras",
             Self::Automations => "automations",
             Self::Activity => "activity",
             Self::Connections => "connections",
@@ -42,6 +46,7 @@ impl Section {
         match self {
             Self::Overview => "Overview",
             Self::Rooms => "Rooms",
+            Self::Cameras => "Cameras",
             Self::Automations => "Automations",
             Self::Activity => "Activity",
             Self::Connections => "Connections",
@@ -51,6 +56,7 @@ impl Section {
         match self {
             Self::Overview => "view-grid-symbolic",
             Self::Rooms => "user-home-symbolic",
+            Self::Cameras => "camera-web-symbolic",
             Self::Automations => crate::icons::AUTOMATIONS,
             Self::Activity => "document-open-recent-symbolic",
             Self::Connections => "network-server-symbolic",
@@ -60,6 +66,7 @@ impl Section {
         match self {
             Self::Overview => "Your home at a glance",
             Self::Rooms => "Every device, by room",
+            Self::Cameras => "Every camera and its last picture",
             Self::Automations => "Desktop and Home Assistant automations",
             Self::Activity => "What your automations did",
             Self::Connections => "Home Assistant and the desktop service",
@@ -140,9 +147,43 @@ pub struct Home {
     pub device_count: usize,
     pub info: ha::Info,
     pub previews: BTreeMap<String, gdk::Texture>,
+    pub devices: std::collections::HashMap<String, ha::DeviceInfo>,
 }
 
 impl Home {
+    /// The devices worth a card, as Rooms shows them.
+    /// Devices worth a card. Devices hidden in Nyx Home are left out unless
+    /// `show_all`, and then marked.
+    pub fn device_list(&self, show_all: bool) -> Vec<crate::device::Device> {
+        let p = prefs::get();
+        let mut list = crate::device::group(&self.entities, &self.devices, show_all);
+        let grouped = crate::device::grouped_lights(&list, &p.collapsed_groups);
+        for d in &mut list {
+            d.hidden = p.hidden_devices.contains(&d.id);
+            d.grouped =
+                d.members.is_none() && d.primary.as_ref().is_some_and(|id| grouped.contains(id));
+        }
+        if !show_all {
+            list.retain(|d| !d.hidden && !d.grouped);
+        }
+        list
+    }
+
+    /// Rooms that get an automatic light group card, with their lights;
+    /// lights hidden by their group still count.
+    pub fn room_light_sets(&self) -> Vec<(String, Vec<String>)> {
+        let mut list = self.device_list(true);
+        list.retain(|d| !d.hidden);
+        crate::device::room_light_sets(&list)
+    }
+
+    /// Single lights (not groups) that aren't hidden on their own.
+    pub fn lights(&self) -> Vec<crate::device::Device> {
+        let mut list = self.device_list(true);
+        list.retain(|d| !d.hidden && d.kind == crate::device::Kind::Light && d.members.is_none());
+        list
+    }
+
     /// Home Assistant data is loaded (it may be offline right now).
     pub fn loaded(&self) -> bool {
         !self.entities.is_empty()
@@ -156,6 +197,7 @@ impl Home {
     pub fn clear(&mut self) {
         self.entities.clear();
         self.areas.clear();
+        self.devices.clear();
         self.device_count = 0;
         self.info = ha::Info::default();
         self.previews.clear();
@@ -182,6 +224,7 @@ pub struct App {
     section: Cell<Section>,
     pub overview: overview::Page,
     pub rooms: rooms::Page,
+    pub cameras: cameras::Page,
     pub automations: automations::Page,
     pub activity: activity::Page,
     pub connections: connections::Page,
@@ -239,6 +282,7 @@ pub fn present(application: &gtk::Application) {
 
     let overview = overview::Page::new();
     let rooms = rooms::Page::new();
+    let cameras = cameras::Page::new();
     let automations = automations::Page::new();
     let activity = activity::Page::new();
     let connections = connections::Page::new();
@@ -246,6 +290,7 @@ pub fn present(application: &gtk::Application) {
     for (section, page_actions) in [
         (Section::Overview, &overview.actions),
         (Section::Rooms, &rooms.actions),
+        (Section::Cameras, &cameras.actions),
         (Section::Automations, &automations.actions),
         (Section::Activity, &activity.actions),
         (Section::Connections, &connections.actions),
@@ -321,6 +366,7 @@ pub fn present(application: &gtk::Application) {
     stack.set_transition_duration(if prefs.reduce_motion { 0 } else { 150 });
     stack.add_named(&overview.root, Some(Section::Overview.id()));
     stack.add_named(&rooms.root, Some(Section::Rooms.id()));
+    stack.add_named(&cameras.root, Some(Section::Cameras.id()));
     stack.add_named(&automations.root, Some(Section::Automations.id()));
     stack.add_named(&activity.root, Some(Section::Activity.id()));
     stack.add_named(&connections.root, Some(Section::Connections.id()));
@@ -368,10 +414,12 @@ pub fn present(application: &gtk::Application) {
             device_count: 0,
             info: ha::Info::default(),
             previews: BTreeMap::new(),
+            devices: Default::default(),
         }),
         section: Cell::new(Section::Overview),
         overview,
         rooms,
+        cameras,
         automations,
         activity,
         connections,
@@ -415,8 +463,36 @@ pub fn present(application: &gtk::Application) {
             "connect" => connection::dialog(),
             "settings" => open_settings(),
             "shortcuts" => show_shortcuts(),
-            _ => {}
+            _ => open_when_connected(what),
         });
+    }
+}
+
+/// Developer aid: `viewer:<entity>` or `details:<device>` once entities arrive.
+fn open_when_connected(what: String) {
+    let ready = get().is_some_and(|app| !app.home.borrow().entities.is_empty());
+    if !ready {
+        glib::timeout_add_local_once(Duration::from_millis(500), move || {
+            open_when_connected(what)
+        });
+        return;
+    }
+    if let Some(id) = what.strip_prefix("viewer:") {
+        crate::viewer::open(id, id, None);
+    } else if let Some(id) = what.strip_prefix("details:") {
+        crate::details::open(id);
+    } else if what == "arrange"
+        && let Some(app) = get()
+    {
+        app.rooms.start_arranging();
+    } else if let Some(camera) = what.strip_prefix("live:") {
+        crate::viewer::open_live(camera);
+    } else if let Some(device) = what.strip_prefix("robot:") {
+        crate::robot_window::open(device);
+    } else if let Some(room) = what.strip_prefix("room:")
+        && let Some(app) = get()
+    {
+        app.rooms.show_room(room, &app.home.borrow());
     }
 }
 
@@ -456,7 +532,7 @@ fn refresh_page() {
         Section::Automations => app.automations.reload(),
         Section::Activity => app.activity.reload(),
         Section::Connections => app.connections.reload_service(),
-        Section::Overview | Section::Rooms => connection::reconnect(),
+        Section::Overview | Section::Rooms | Section::Cameras => connection::reconnect(),
     }
 }
 
@@ -501,7 +577,11 @@ fn flush_now() {
     let home = app.home.borrow();
     let changed = (!rebuild).then_some(&changed);
     app.overview.refresh(&home, changed);
-    app.rooms.refresh(&home, changed);
+    app.rooms.refresh(&home, changed.is_some());
+    app.cameras.refresh(&home, changed.is_some());
+    if let Some(changed) = changed {
+        cards::notify(&home, Some(changed));
+    }
     app.connections.refresh(&home);
     if rebuild {
         app.automations.home_changed(&home);
@@ -561,6 +641,48 @@ pub fn call(entity_id: &str, service: &str, data: serde_json::Value) {
             }
         },
     );
+}
+
+/// Call a light action on every light in a room.
+pub fn call_area(area_id: &str, service: &str, data: serde_json::Value) {
+    let (area, service) = (area_id.to_string(), service.to_string());
+    ha_task(
+        move |base, token| async move { ha::call_area(&base, &token, &area, &service, data).await },
+        |_| {},
+    );
+}
+
+/// Run a Home Assistant request off the GTK thread with the saved address
+/// and token; `done` gets the result, and an error is shown as a toast.
+pub fn ha_task<T, F, Fut>(request: F, done: impl FnOnce(T) + 'static)
+where
+    T: Send + 'static,
+    F: FnOnce(String, String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    ha_try(request, |result| match result {
+        Ok(value) => done(value),
+        Err(error) => toast(&error),
+    });
+}
+
+/// Like [`ha_task`], with the result, error and all, handed to `done`.
+pub fn ha_try<T, F, Fut>(request: F, done: impl FnOnce(Result<T, String>) + 'static)
+where
+    T: Send + 'static,
+    F: FnOnce(String, String) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+{
+    let Some(app) = get() else { return };
+    let (base, token) = {
+        let home = app.home.borrow();
+        (home.base.clone(), home.token.clone())
+    };
+    if token.is_empty() {
+        done(Err("Connect Home Assistant first.".into()));
+        return;
+    }
+    rt::spawn(async move { request(base, token).await }, done);
 }
 
 pub fn toast(message: &str) {
@@ -645,8 +767,8 @@ fn open_settings() {
 
 const SHORTCUTS: &[(&[&str], &str)] = &[
     (
-        &["Ctrl", "1–5"],
-        "Go to Overview, Rooms, Automations, Activity or Connections",
+        &["Ctrl", "1–6"],
+        "Go to Overview, Rooms, Cameras, Automations, Activity or Connections",
     ),
     (&["Ctrl", "F"], "Search devices"),
     (&["Ctrl", "N"], "New automation"),
@@ -698,9 +820,10 @@ fn install_keys(window: &gtk::ApplicationWindow) {
         let section = match key {
             gdk::Key::_1 => Some(Section::Overview),
             gdk::Key::_2 => Some(Section::Rooms),
-            gdk::Key::_3 => Some(Section::Automations),
-            gdk::Key::_4 => Some(Section::Activity),
-            gdk::Key::_5 => Some(Section::Connections),
+            gdk::Key::_3 => Some(Section::Cameras),
+            gdk::Key::_4 => Some(Section::Automations),
+            gdk::Key::_5 => Some(Section::Activity),
+            gdk::Key::_6 => Some(Section::Connections),
             _ => None,
         };
         match key {

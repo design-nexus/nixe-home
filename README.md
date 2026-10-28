@@ -12,12 +12,14 @@ curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-home/main/install.
 ## What it does
 
 - **Overview:** lights on, open doors and windows, who's home, the indoor
-  temperature and device health at a glance, your favorite devices as live
-  tiles, and cameras, robots and energy sensors when Home Assistant has them.
-- **Rooms:** every device grouped by Home Assistant area, with search and an
-  area filter. Tiles have the control that fits the device: a switch, a
-  brightness slider, target temperature, cover and media buttons, a two-click
-  unlock, robot commands, or a camera still.
+  temperature and device health at a glance, your favorite devices, a link to
+  your cameras, robots, and energy sensors when Home Assistant has them.
+- **Rooms:** one card per device on a grid, with scenes as colored tiles and
+  search. All shows every room in sections by type (Lights, Climate, Cameras,
+  …) that sit side by side; a room's chip shows just that room's cards on one
+  grid. Each card shows what's useful for that kind of device; everything else
+  is in its details.
+- **Cameras:** every camera with its last picture, each card saying its room.
 - **Automations:** desktop automations that run in a user service even with the
   window closed, Home Assistant automations that run on your server, and hybrid
   automations that connect the two. Build them with a simple When / Only if /
@@ -29,8 +31,7 @@ The foot of the sidebar shows whether Home is connected (in the icon-only
 sidebar, just the colored dot; hover it for details) and opens Connections.
 Settings is the last button in the header.
 
-Camera live video and vendor-specific robot commands are not available yet. OAuth
-sign-in is deferred until the app has a registered website redirect; see
+OAuth sign-in is deferred until the app has a registered website redirect; see
 [the architecture notes](docs/ARCHITECTURE.md).
 
 ## Connect
@@ -52,20 +53,93 @@ of authentication and permissions.
 
 ## Devices
 
-Open a tile's details with its **⋯** button, a right-click, or Shift+F10. From
-there, **Add to Overview** pins it as a favorite. Arrow keys move between tiles;
-Enter or Space uses the tile's main control. Rooms leaves out the diagnostic,
-configuration and hidden entities that Home Assistant keeps off its own
-dashboards; the eye button in the header (or **Settings → Rooms**) shows them.
+Home Assistant's entities are gathered into one card per device, each in its
+own color:
+
+- **Thermostat:** the current temperature and what it's doing, the mode, the
+  target (or heat-to and cool-to in heat/cool mode), and the fan setting.
+- **Light:** on/off, a brightness slider, and a color button with a swatch of
+  colors and whites.
+- **Light group:** one card for several lights: one switch, one brightness
+  and one color for all of them. Groups made in Home Assistant come first, and
+  every room with two or more lights gets one too.
+- **Camera:** its last picture, enabled switch, motion, person, live and
+  battery indicators.
+- **Vacuum and mower:** state and battery, icon buttons for start, pause and
+  dock, a menu with the other commands, and a map button that opens the map.
+- **Media, purifier and fan, security, lock, cover, switches and sensors:** the
+  controls and readings that matter for each.
+
+Open a card's details with its **⋯** button, a right-click, or Shift+F10: every
+other control, reading, setting and diagnostic of the device, a search when
+there are many, **Add to Overview** to pin it, and a link to the device in Home
+Assistant. Its **Device** section renames it, moves it to another room (Home
+Assistant calls rooms *areas*), and hides it in Nyx Home; hidden devices stay
+in Home Assistant, show again with the eye button, and are listed in
+**Settings → Rooms** to unhide. Arrow keys move between cards; Enter or Space
+uses the card's main control. Rooms leaves out diagnostic, configuration and
+hidden entities; the eye button in the header (or **Settings → Rooms**) shows
+them.
+
+Tap a scene tile to run it. Its **⋯** button (or a right-click, a long press,
+or Shift+F10) renames it, puts it in a room, or hides it in Nyx Home; scenes
+and scripts made in Home Assistant also open in its editor, and ones from
+another app (SmartThings, Hue, …) say where to change what they do.
+
+To make a light group, use **+** on the Lights heading, or a room's lights
+card and **Make group…**: choose a name, a room and the lights. Home Assistant
+keeps the group (so it works in its app, automations and voice assistants too)
+and can hide the grouped lights there. A group's details change its lights or
+delete it. **Hide its lights**, in a group's or a room's lights details, hides
+the single lights in Nyx Home only, so just the group shows; they stay in the
+group's details. Making, changing and moving things in Home Assistant needs an
+administrator token.
+
+Cards sit on a grid and come in a few sizes, in rows by columns: a toggle,
+lock or single sensor is 1 × 4; a light, light group, purifier, media player,
+robot or security panel is 2 × 4; a thermostat or camera is 4 × 4; a scene is
+1 × 2. A thermostat keeps its layout when it's off, with its setpoints dimmed.
+
+The grid button in the header of Rooms and Cameras starts **Arrange** mode
+(on Overview, the edit button does): drag a card by anywhere on it to move it
+within its section, or focus it and use Ctrl+arrow keys; its size button (or
+Ctrl+S) offers the sizes that card comes in; the arrows on a section heading
+move the section. Controls are paused while arranging. **Done** (the grid
+button again) or Esc finishes; **Reset** puts the page back as it was. The
+order and sizes are saved; each room's tab and the Cameras page keep their own
+order.
+
+A robot's card opens its own window (the map button, or Enter on the card),
+like the vendor apps: the live map on the left and a panel on the right with its
+state, battery and this session's progress, icon commands, the settings that
+matter (cleaning mode, suction, route, carpets; or mowing mode, height,
+efficiency, direction, rain protection and live position), station or mower
+actions, and **All settings…**. The floor plan refreshes every 10 seconds while
+the robot works. A mower reports where it is while it mows only with **Live
+position** on. Home Assistant's robot integration draws the floor plan; Home
+draws what you read and touch on top of it, sharp at any zoom: room or zone names, the robot, its dock, no-go zones and
+walls, and the mower's trail. Tap a room's name to clean just that room (Home
+asks first), or a zone's name to mow it (after the mower safety check). Turn off
+the integration's own room names, icons, robot and dock in its map options so
+they don't show twice.
+
+Cameras that Home Assistant can stream have a **Live** button (or L) in their
+viewer: the video plays muted (M for sound), and after three minutes Home asks
+"Still watching?" and stops unless you choose **Keep watching**, to save battery
+cameras. Closing the viewer stops it, and a fresh still replaces the old one.
+One camera plays at a time. Live video uses mpv's library (libmpv). Eufy
+cameras stream only with their **RTSP stream** setting on, which uses more
+battery.
 
 Choose the edit button on Overview to reorder or hide its sections. Camera stills
-and vacuum maps load only when you ask for them, come through Home Assistant's
-authenticated proxy, and are kept in memory, not on disk. Robot buttons appear
-only for commands the entity supports. A vacuum or mower is one tile with its
-controls and map (a map image or camera on the same device, the current map
-first); its many settings entities appear only when showing everything, and its
-map and video stay out of the Cameras section. Starting a mower asks for confirmation;
-area cleaning uses the areas mapped to the vacuum in Home Assistant.
+and maps come from Home Assistant's last snapshot through its authenticated
+proxy, load once per session, and never refresh on their own, so battery
+cameras aren't woken. Click one to open it larger: zoom with the buttons,
+Ctrl+scroll, a pinch or + and −, drag to pan, Refresh for a new one, and Esc or
+Close to put it away. Pictures are kept in memory, not on disk. Robot buttons
+appear only for commands the entity supports. Starting a mower asks for
+confirmation; area cleaning uses the areas mapped to the vacuum in Home
+Assistant.
 
 ## Automations
 
@@ -103,7 +177,7 @@ can be imported with `nyx-homectl save examples/manual-notification.json`.
 
 | Keys | Does |
 | --- | --- |
-| Ctrl+1 … Ctrl+5 | Overview, Rooms, Automations, Activity, Connections |
+| Ctrl+1 … Ctrl+6 | Overview, Rooms, Cameras, Automations, Activity, Connections |
 | Ctrl+F | Search devices |
 | Ctrl+N | New automation |
 | Ctrl+L | Connect to Home Assistant |
@@ -114,7 +188,8 @@ can be imported with `nyx-homectl save examples/manual-notification.json`.
 
 ## Build and install
 
-Requirements: Rust/Cargo, GTK 4.18+, and `secret-tool` from libsecret.
+Requirements: Rust/Cargo, GTK 4.18+, `secret-tool` from libsecret, and libmpv
+(the `mpv` package) for live camera video.
 
 ```sh
 cargo build --release --locked

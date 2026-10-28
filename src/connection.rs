@@ -20,7 +20,7 @@ thread_local! {
 }
 
 enum Message {
-    Ha(ha::Update),
+    Ha(Box<ha::Update>),
     Rejected,
     Unreachable(String),
 }
@@ -115,7 +115,7 @@ pub fn connect(base: String, token: String) {
         };
         let metadata = inventory.metadata.clone();
         if tx
-            .send(Message::Ha(ha::Update::Connected(inventory)))
+            .send(Message::Ha(Box::new(ha::Update::Connected(inventory))))
             .await
             .is_err()
         {
@@ -126,7 +126,7 @@ pub fn connect(base: String, token: String) {
             let tx = tx.clone();
             async move {
                 while let Ok(update) = updates_rx.recv().await {
-                    if tx.send(Message::Ha(update)).await.is_err() {
+                    if tx.send(Message::Ha(Box::new(update))).await.is_err() {
                         return;
                     }
                 }
@@ -147,7 +147,8 @@ pub fn connect(base: String, token: String) {
 
 fn receive(message: Message) {
     let Some(app) = app::get() else { return };
-    match message {
+    let update = match message {
+        Message::Ha(update) => *update,
         Message::Rejected => {
             app::set_link(Link::Rejected);
             app::toast_action(
@@ -155,6 +156,7 @@ fn receive(message: Message) {
                 "Replace token",
                 dialog,
             );
+            return;
         }
         Message::Unreachable(error) => {
             let loaded = app.home.borrow().loaded();
@@ -163,12 +165,16 @@ fn receive(message: Message) {
             } else {
                 Link::Unreachable(error)
             });
+            return;
         }
-        Message::Ha(ha::Update::Connected(inventory)) => {
+    };
+    match update {
+        ha::Update::Connected(inventory) => {
             {
                 let mut home = app.home.borrow_mut();
                 home.areas = inventory.areas;
                 home.device_count = inventory.device_count;
+                home.devices = inventory.devices;
                 home.info = inventory.info;
                 home.entities = inventory
                     .entities
@@ -178,13 +184,13 @@ fn receive(message: Message) {
             }
             app::rebuild();
         }
-        Message::Ha(ha::Update::Online) => {
+        ha::Update::Online => {
             if app.home.borrow().link != Link::Online {
                 app::set_link(Link::Online);
             }
         }
-        Message::Ha(ha::Update::Offline(error)) => app::set_link(Link::Offline(error)),
-        Message::Ha(ha::Update::Entity(entity)) => {
+        ha::Update::Offline(error) => app::set_link(Link::Offline(error)),
+        ha::Update::Entity(entity) => {
             let id = entity.entity_id.clone();
             let known = app
                 .home
@@ -198,7 +204,7 @@ fn receive(message: Message) {
                 app::rebuild();
             }
         }
-        Message::Ha(ha::Update::Removed(id)) => {
+        ha::Update::Removed(id) => {
             app.home.borrow_mut().entities.remove(&id);
             app::rebuild();
         }

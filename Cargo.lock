@@ -310,7 +310,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -625,7 +625,7 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1241,6 +1241,7 @@ dependencies = [
  "futures-util",
  "gtk4",
  "nyx-core",
+ "nyx-playback",
  "nyx-theme",
  "nyx-ui",
  "petgraph",
@@ -1256,6 +1257,18 @@ dependencies = [
  "url",
  "uuid",
  "zbus",
+]
+
+[[package]]
+name = "nyx-playback"
+version = "0.1.0"
+source = "git+https://github.com/design-nexus/nyx-design.git?rev=b685e18f022265450b082cd887a6a52f2f9b1609#b685e18f022265450b082cd887a6a52f2f9b1609"
+dependencies = [
+ "async-channel",
+ "gtk4",
+ "nyx-core",
+ "nyx-ui",
+ "serde_json",
 ]
 
 [[package]]
@@ -1598,7 +1611,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1945,7 +1958,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

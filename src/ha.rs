@@ -27,6 +27,12 @@ pub struct Entity {
     /// Hidden by the user or an integration in Home Assistant.
     #[serde(skip)]
     pub hidden: bool,
+    /// The integration that provides it (`group` for a light group).
+    #[serde(skip)]
+    pub platform: Option<String>,
+    /// The config entry it comes from, for groups made in the UI.
+    #[serde(skip)]
+    pub config_entry_id: Option<String>,
 }
 
 impl Entity {
@@ -46,6 +52,22 @@ impl Entity {
         self.device_id = meta.device_id.clone();
         self.entity_category = meta.entity_category.clone();
         self.hidden = meta.hidden;
+        self.platform = meta.platform.clone();
+        self.config_entry_id = meta.config_entry_id.clone();
+    }
+
+    /// A light group: a light that stands for other lights.
+    pub fn members(&self) -> Option<Vec<String>> {
+        if self.domain() != "light" {
+            return None;
+        }
+        let list: Vec<String> = self.attributes["entity_id"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        (!list.is_empty()).then_some(list)
     }
 }
 
@@ -65,8 +87,21 @@ pub struct Inventory {
     pub entities: Vec<Entity>,
     pub areas: Vec<Area>,
     pub device_count: usize,
+    pub devices: HashMap<String, DeviceInfo>,
     pub info: Info,
     pub metadata: Arc<HashMap<String, Metadata>>,
+}
+
+/// A device from Home Assistant's device registry.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DeviceInfo {
+    pub id: String,
+    pub name: String,
+    pub area_name: Option<String>,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    /// `service` for integrations that aren't physical devices.
+    pub entry_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -76,6 +111,8 @@ pub struct Metadata {
     pub device_id: Option<String>,
     pub entity_category: Option<String>,
     pub hidden: bool,
+    pub platform: Option<String>,
+    pub config_entry_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -186,7 +223,7 @@ pub async fn fetch_inventory(base: &str, token: &str) -> Result<Inventory, Strin
     let info = check(base, token).await.map_err(|e| e.to_string())?;
     let mut entities = fetch_states(base, token).await?;
     let registry = tokio::time::timeout(Duration::from_secs(8), fetch_registry(base, token)).await;
-    let (metadata, areas, device_count) = registry.ok().and_then(Result::ok).unwrap_or_default();
+    let (metadata, areas, devices) = registry.ok().and_then(Result::ok).unwrap_or_default();
     for entity in &mut entities {
         if let Some(meta) = metadata.get(&entity.entity_id) {
             entity.apply(meta);
@@ -195,7 +232,8 @@ pub async fn fetch_inventory(base: &str, token: &str) -> Result<Inventory, Strin
     Ok(Inventory {
         entities,
         areas,
-        device_count,
+        device_count: devices.len(),
+        devices,
         info,
         metadata: Arc::new(metadata),
     })
@@ -239,7 +277,14 @@ where
 async fn fetch_registry(
     base: &str,
     token: &str,
-) -> Result<(HashMap<String, Metadata>, Vec<Area>, usize), String> {
+) -> Result<
+    (
+        HashMap<String, Metadata>,
+        Vec<Area>,
+        HashMap<String, DeviceInfo>,
+    ),
+    String,
+> {
     let (mut socket, _) = tokio_tungstenite::connect_async(websocket_url(base)?.as_str())
         .await
         .map_err(|_| "Registry unavailable".to_string())?;
@@ -266,18 +311,26 @@ async fn fetch_registry(
     }
     area_list.sort_by_key(|a| a.name.to_lowercase());
     let mut device_data = HashMap::new();
+    let mut device_info = HashMap::new();
     for device in devices.as_array().into_iter().flatten() {
         if let Some(id) = device["id"].as_str() {
-            device_data.insert(
+            let name = device["name_by_user"]
+                .as_str()
+                .or_else(|| device["name"].as_str())
+                .map(str::to_string);
+            let area_id = device["area_id"].as_str().map(str::to_string);
+            device_info.insert(
                 id.to_string(),
-                (
-                    device["name_by_user"]
-                        .as_str()
-                        .or_else(|| device["name"].as_str())
-                        .map(str::to_string),
-                    device["area_id"].as_str().map(str::to_string),
-                ),
+                DeviceInfo {
+                    id: id.to_string(),
+                    name: name.clone().unwrap_or_default(),
+                    area_name: area_id.as_ref().and_then(|a| area_names.get(a)).cloned(),
+                    manufacturer: device["manufacturer"].as_str().map(str::to_string),
+                    model: device["model"].as_str().map(str::to_string),
+                    entry_type: device["entry_type"].as_str().map(str::to_string),
+                },
             );
+            device_data.insert(id.to_string(), (name, area_id));
         }
     }
     let mut metadata = HashMap::new();
@@ -300,10 +353,12 @@ async fn fetch_registry(
                 device_id: item["device_id"].as_str().map(str::to_string),
                 entity_category: item["entity_category"].as_str().map(str::to_string),
                 hidden: !item["hidden_by"].is_null(),
+                platform: item["platform"].as_str().map(str::to_string),
+                config_entry_id: item["config_entry_id"].as_str().map(str::to_string),
             },
         );
     }
-    Ok((metadata, area_list, device_data.len()))
+    Ok((metadata, area_list, device_info))
 }
 
 async fn read_json<S>(socket: &mut WebSocketStream<S>) -> Result<Value, String>
@@ -354,10 +409,23 @@ pub fn allowed(domain: &str, service: &str) -> bool {
             "turn_on" | "turn_off"
         ) | ("lock", "lock" | "unlock")
             | ("cover", "open_cover" | "close_cover" | "stop_cover")
-            | ("climate", "set_temperature")
-            | ("media_player", "media_play_pause" | "volume_set")
+            | (
+                "climate",
+                "set_temperature" | "set_hvac_mode" | "set_fan_mode"
+            )
+            | ("fan", "set_preset_mode" | "set_percentage")
+            | (
+                "media_player",
+                "media_play_pause" | "volume_set" | "select_source" | "turn_on" | "turn_off"
+            )
             | ("scene" | "script", "turn_on")
             | ("button" | "input_button", "press")
+            | ("select" | "input_select", "select_option")
+            | ("number" | "input_number", "set_value")
+            | (
+                "alarm_control_panel",
+                "alarm_arm_home" | "alarm_arm_away" | "alarm_arm_night" | "alarm_disarm"
+            )
     )
 }
 
@@ -390,6 +458,312 @@ pub async fn call(
         .is_success()
         .then_some(())
         .ok_or_else(|| http_error(response.status()))
+}
+
+/// Call a light action on every light in an area.
+pub async fn call_area(
+    base: &str,
+    token: &str,
+    area_id: &str,
+    service: &str,
+    data: Value,
+) -> Result<(), String> {
+    if !allowed("light", service) {
+        return Err("Lights don't offer that control.".into());
+    }
+    let mut body = match data {
+        Value::Object(map) => map,
+        _ => Default::default(),
+    };
+    body.insert("area_id".into(), area_id.into());
+    let response = client()
+        .post(api(base, &format!("services/light/{service}")))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant. The command wasn't sent.".to_string())?;
+    response
+        .status()
+        .is_success()
+        .then_some(())
+        .ok_or_else(|| http_error(response.status()))
+}
+
+const ADMIN: &str = "Changing this needs a Home Assistant administrator token.";
+
+/// One WebSocket command, such as a registry update; its result.
+pub async fn ws_command(base: &str, token: &str, mut command: Value) -> Result<Value, String> {
+    let (mut socket, _) = tokio_tungstenite::connect_async(websocket_url(base)?.as_str())
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant.".to_string())?;
+    authenticate(&mut socket, token).await?;
+    command["id"] = json!(1);
+    socket
+        .send(Message::Text(command.to_string().into()))
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant.".to_string())?;
+    loop {
+        let response = read_json(&mut socket).await?;
+        if response["id"].as_u64() != Some(1) {
+            continue;
+        }
+        let _ = socket.close(None).await;
+        if response["success"] == true {
+            return Ok(response["result"].clone());
+        }
+        return Err(match response["error"]["code"].as_str() {
+            Some("unauthorized") => ADMIN.into(),
+            _ => format!(
+                "Home Assistant refused the change: {}",
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap_or("unknown error")
+            ),
+        });
+    }
+}
+
+/// A live stream of a camera: Home Assistant's HLS playlist URL. The URL
+/// carries a short-lived token of its own; don't log or show it.
+pub async fn camera_stream(base: &str, token: &str, entity_id: &str) -> Result<String, String> {
+    if !entity_id.starts_with("camera.") {
+        return Err("That isn't a camera.".into());
+    }
+    let result = ws_command(
+        base,
+        token,
+        json!({"type": "camera/stream", "entity_id": entity_id, "format": "hls"}),
+    )
+    .await
+    .map_err(|e| {
+        if e.contains("refused") {
+            "Home Assistant has no live stream for this camera. Some cameras (Eufy, for one) \
+             stream only with their RTSP stream setting on."
+                .to_string()
+        } else {
+            e
+        }
+    })?;
+    stream_url(base, &result)
+}
+
+/// The full URL from a `camera/stream` result (`{"url": "/api/hls/…"}`).
+pub fn stream_url(base: &str, result: &Value) -> Result<String, String> {
+    let path = result["url"]
+        .as_str()
+        .filter(|u| u.starts_with("/api/hls/"))
+        .ok_or("Home Assistant didn't return a stream.")?;
+    Ok(format!("{}{path}", base.trim_end_matches('/')))
+}
+
+/// A request to Home Assistant's config API (`/api/config/...`).
+async fn config_request(
+    base: &str,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let mut request = client()
+        .request(method, api(base, &format!("config/{path}")))
+        .bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant.".to_string())?;
+    match response.status().as_u16() {
+        200..=299 => Ok(response.json().await.unwrap_or(Value::Null)),
+        401 | 403 => Err(ADMIN.into()),
+        _ => Err(http_error(response.status())),
+    }
+}
+
+/// Step a config or options flow on to its end; an error names what the
+/// form complained about.
+fn flow_done(step: &Value) -> Result<(), String> {
+    match step["type"].as_str() {
+        Some("create_entry") => Ok(()),
+        Some("abort") => Err(format!(
+            "Home Assistant stopped: {}",
+            step["reason"].as_str().unwrap_or("unknown reason")
+        )),
+        _ => Err(
+            match step["errors"].as_object().and_then(|e| e.values().next()) {
+                Some(error) => format!("Home Assistant didn't accept it: {error}"),
+                None => "Home Assistant didn't accept the group.".into(),
+            },
+        ),
+    }
+}
+
+/// Create a light group in Home Assistant; its config entry ID.
+pub async fn create_light_group(
+    base: &str,
+    token: &str,
+    name: &str,
+    members: &[String],
+    hide_members: bool,
+) -> Result<String, String> {
+    let start = config_request(
+        base,
+        token,
+        reqwest::Method::POST,
+        "config_entries/flow",
+        Some(json!({"handler": "group", "show_advanced_options": false})),
+    )
+    .await?;
+    let flow = start["flow_id"]
+        .as_str()
+        .ok_or("Home Assistant couldn't start a group.")?
+        .to_string();
+    let path = format!("config_entries/flow/{flow}");
+    let mut step = start;
+    if step["type"] == "menu" {
+        step = config_request(
+            base,
+            token,
+            reqwest::Method::POST,
+            &path,
+            Some(json!({"next_step_id": "light"})),
+        )
+        .await?;
+    }
+    if step["step_id"] != "light" {
+        return Err("Home Assistant offered no light group.".into());
+    }
+    let done = config_request(
+        base,
+        token,
+        reqwest::Method::POST,
+        &path,
+        Some(
+            json!({"name": name, "entities": members, "hide_members": hide_members, "all": false}),
+        ),
+    )
+    .await?;
+    flow_done(&done)?;
+    done["result"]["entry_id"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "The group was made, but Home Assistant didn't say which it is.".into())
+}
+
+/// Change which lights a group holds and whether they're hidden.
+pub async fn edit_light_group(
+    base: &str,
+    token: &str,
+    entry_id: &str,
+    members: &[String],
+    hide_members: bool,
+) -> Result<(), String> {
+    let start = config_request(
+        base,
+        token,
+        reqwest::Method::POST,
+        "config_entries/options/flow",
+        Some(json!({"handler": entry_id})),
+    )
+    .await?;
+    let flow = start["flow_id"]
+        .as_str()
+        .ok_or("Home Assistant couldn't edit the group.")?;
+    let done = config_request(
+        base,
+        token,
+        reqwest::Method::POST,
+        &format!("config_entries/options/flow/{flow}"),
+        Some(json!({"entities": members, "hide_members": hide_members, "all": false})),
+    )
+    .await?;
+    flow_done(&done)
+}
+
+pub async fn delete_config_entry(base: &str, token: &str, entry_id: &str) -> Result<(), String> {
+    config_request(
+        base,
+        token,
+        reqwest::Method::DELETE,
+        &format!("config_entries/entry/{entry_id}"),
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The entity a config entry made, once Home Assistant has registered it.
+pub async fn entry_entity(
+    base: &str,
+    token: &str,
+    entry_id: &str,
+) -> Result<Option<String>, String> {
+    let list = ws_command(base, token, json!({"type": "config/entity_registry/list"})).await?;
+    Ok(list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| e["config_entry_id"] == entry_id)
+        .and_then(|e| e["entity_id"].as_str())
+        .map(str::to_string))
+}
+
+/// Integration actions the app may call, for robot maps: clean rooms, mow
+/// zones. Anything else is refused before a request is made.
+pub fn allowed_integration(domain: &str, service: &str) -> bool {
+    matches!(
+        (domain, service),
+        ("dreame_vacuum", "vacuum_clean_segment") | ("dreame_lawn_mower", "start_zone_mowing")
+    )
+}
+
+/// Call an integration's own action (see [`allowed_integration`]).
+pub async fn call_service(
+    base: &str,
+    token: &str,
+    domain: &str,
+    service: &str,
+    data: Value,
+) -> Result<(), String> {
+    if !allowed_integration(domain, service) {
+        return Err("Home doesn't send that action.".into());
+    }
+    let response = client()
+        .post(api(base, &format!("services/{domain}/{service}")))
+        .bearer_auth(token)
+        .json(&data)
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant. The command wasn't sent.".to_string())?;
+    response
+        .status()
+        .is_success()
+        .then_some(())
+        .ok_or_else(|| http_error(response.status()))
+}
+
+/// The mower integration's map data (`/api/dreame_lawn_mower/mowing-map/…`).
+pub async fn fetch_mowing_map(base: &str, token: &str, path: &str) -> Result<Value, String> {
+    if !path.starts_with("/api/dreame_lawn_mower/mowing-map/") || path.contains("..") {
+        return Err("That isn't a mower map.".into());
+    }
+    let url = format!("{}{path}", base.trim_end_matches('/'));
+    let response = client()
+        .get(url)
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|_| "Couldn't reach Home Assistant.".to_string())?;
+    if !response.status().is_success() {
+        return Err(http_error(response.status()));
+    }
+    response
+        .json()
+        .await
+        .map_err(|_| "The mower's map data couldn't be read.".into())
 }
 
 pub async fn call_robot_service(
@@ -566,6 +940,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stream_urls_are_home_assistant_hls() {
+        let ok = stream_url(
+            "http://ha.local:8123/",
+            &json!({"url": "/api/hls/abc/master_playlist.m3u8"}),
+        );
+        assert_eq!(
+            ok.unwrap(),
+            "http://ha.local:8123/api/hls/abc/master_playlist.m3u8"
+        );
+        assert!(stream_url("http://ha", &json!({"url": "https://elsewhere/x.m3u8"})).is_err());
+        assert!(stream_url("http://ha", &json!({})).is_err());
+    }
+
+    #[test]
+    fn only_robot_map_actions_go_to_integrations() {
+        assert!(allowed_integration("dreame_vacuum", "vacuum_clean_segment"));
+        assert!(allowed_integration(
+            "dreame_lawn_mower",
+            "start_zone_mowing"
+        ));
+        assert!(!allowed_integration("dreame_vacuum", "vacuum_delete_map"));
+        assert!(!allowed_integration("shell_command", "anything"));
+    }
+
+    #[test]
     fn entity_labels_use_home_assistant_friendly_name() {
         let entity: Entity = serde_json::from_value(json!({
             "entity_id": "light.office",
@@ -596,6 +995,7 @@ mod tests {
                 device_id: Some("device-1".into()),
                 entity_category: Some("diagnostic".into()),
                 hidden: true,
+                ..Default::default()
             },
         )]);
         let event = json!({"type":"event","event":{"data":{
@@ -617,6 +1017,11 @@ mod tests {
         assert!(allowed("lock", "unlock"));
         assert!(!allowed("lock", "turn_off"));
         assert!(!allowed("shell_command", "turn_on"));
+        assert!(allowed("climate", "set_hvac_mode"));
+        assert!(allowed("select", "select_option"));
+        assert!(allowed("alarm_control_panel", "alarm_disarm"));
+        assert!(!allowed("alarm_control_panel", "alarm_trigger"));
+        assert!(!allowed("camera", "turn_on"));
     }
 
     /// Answer one request with `status`, `kind` and `body`; resolve to the request.

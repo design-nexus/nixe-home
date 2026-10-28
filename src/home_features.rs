@@ -35,6 +35,18 @@ impl RobotAction {
         }
     }
 
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Start => "media-playback-start-symbolic",
+            Self::Pause => "media-playback-pause-symbolic",
+            Self::Stop => "media-playback-stop-symbolic",
+            Self::Dock => "go-home-symbolic",
+            Self::Locate => "find-location-symbolic",
+            Self::CleanSpot => "mark-location-symbolic",
+            Self::CleanArea => "view-grid-symbolic",
+        }
+    }
+
     pub fn service(self, domain: &str) -> Option<&'static str> {
         match (domain, self) {
             ("vacuum", Self::Start) => Some("start"),

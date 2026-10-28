@@ -1,4 +1,4 @@
-use crate::prefs;
+use crate::{kind_colors, prefs};
 
 pub fn install() {
     nyx_theme::use_design_2();
@@ -7,7 +7,7 @@ pub fn install() {
         base_skip: &[],
         css: include_str!("style.css"),
         no_glow_css: "",
-        extra_colors: None,
+        extra_colors: Some(|palette| kind_colors::css(&nyx_theme::swatches(), &palette.accent)),
         prefs: || {
             let p = prefs::get();
             nyx_theme::ThemePrefs {

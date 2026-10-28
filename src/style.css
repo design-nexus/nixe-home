@@ -16,7 +16,8 @@ window.home-window .dimmed {
   opacity: 0.45;
 }
 
-/* ---------- Device tiles ---------- */
+/* ---------- Device cards ---------- */
+/* Backgrounds stay neutral; each kind's color comes from kind_colors.rs. */
 
 window.home-window flowbox > flowboxchild {
   padding: 0;
@@ -25,74 +26,272 @@ window.home-window flowbox > flowboxchild {
   border-radius: var(--nyx-radius-card);
 }
 
-window.home-window flowbox.tile-grid > flowboxchild:focus-visible {
+window.home-window .device-card:focus-visible {
   outline: 2px solid alpha(@theme_accent, 0.8);
-  outline-offset: 1px;
+  outline-offset: 2px;
 }
 
-window.home-window .tile {
-  min-width: 220px;
-  padding: 12px 10px 12px 14px;
-  background: @theme_card;
-  border-radius: var(--nyx-radius-card);
-  transition: background 120ms ease-out;
+window.home-window .section-head {
+  min-height: 30px;
 }
 
-window.home-window .tile.on {
-  background: mix(@theme_card, @theme_accent, 0.1);
+window.home-window .section-head .group-title {
+  margin-bottom: 0;
 }
 
-window.home-window .tile-icon {
-  -gtk-icon-size: 20px;
-  min-width: 34px;
-  min-height: 34px;
-  border-radius: 10px;
+/* A light group: a faint stripe of the light color says "several". */
+window.home-window .device-card.group-card {
+  box-shadow: inset 0 0 0 1px alpha(@kind_light, 0.35);
+}
+
+window.home-window .device-card.hidden-device {
+  opacity: 0.6;
+}
+
+window.home-window .hidden-tag {
+  padding: 2px 8px;
+  border-radius: 999px;
   background: @field;
   color: @theme_dim_text;
+  font-size: 0.8em;
 }
 
-window.home-window .tile.on .tile-icon {
-  background: alpha(@theme_accent, 0.18);
-  color: @theme_accent;
+window.home-window button.robot-action,
+window.home-window menubutton.robot-action > button {
+  min-width: 44px;
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: @field;
 }
 
-window.home-window .tile.unavailable .tile-name,
-window.home-window .tile.unavailable .tile-icon {
-  opacity: 0.5;
+window.home-window button.robot-action:hover,
+window.home-window menubutton.robot-action > button:hover {
+  background: alpha(@kind_robot, 0.2);
+  color: @kind_robot;
 }
 
-window.home-window .tile.unavailable .tile-state {
-  color: @theme_warning;
+window.home-window checkbutton.light-check {
+  padding: 6px 10px;
 }
 
-window.home-window .tile-name {
-  font-weight: 500;
+/* Cards are sized by the grid (grid.rs); their content must fit. */
+window.home-window .device-card {
+  padding: 12px 14px;
+  background: @theme_card;
+  border-radius: var(--nyx-radius-card);
+  box-shadow: inset 0 0 0 1px alpha(@theme_border, 0.6);
+  transition: box-shadow 160ms ease-out;
 }
 
-window.home-window .tile-state {
+window.home-window .device-card image.chip,
+window.home-window .hint-card image.chip {
+  -gtk-icon-size: 20px;
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 12px;
+  transition: background 160ms ease-out, color 160ms ease-out;
+}
+
+window.home-window .card-name {
+  font-weight: 600;
+}
+
+window.home-window .card-sub {
   color: @theme_dim_text;
   font-size: 0.92em;
   font-feature-settings: "tnum";
 }
 
-window.home-window .tile-readout {
-  font-weight: 600;
+window.home-window .device-card.unavailable image.chip,
+window.home-window .device-card.unavailable .card-name {
+  opacity: 0.5;
+}
+
+window.home-window .device-card.unavailable .card-sub {
+  color: @theme_warning;
+}
+
+window.home-window .device-card scale {
+  margin: 0 2px;
+}
+
+window.home-window .device-card scale trough {
+  min-height: 6px;
+  border-radius: 999px;
+}
+
+window.home-window .device-card scale slider {
+  min-width: 16px;
+  min-height: 16px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px @theme_card;
+}
+
+/* Joined choices: mode, fan, security. */
+window.home-window .card-choice {
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+  padding: 3px;
+}
+
+window.home-window .card-choice > .segment {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: calc(var(--nyx-radius-small) - 2px);
+  background: none;
+  box-shadow: none;
+  font-size: 0.92em;
+}
+
+/* Pictures: camera stills and robot maps. */
+window.home-window button.thumb {
+  padding: 0;
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+  box-shadow: none;
+}
+
+window.home-window button.thumb:hover .thumb-picture {
+  opacity: 0.9;
+}
+
+window.home-window .thumb-empty {
+  color: @theme_dim_text;
+  font-size: 0.92em;
+}
+
+window.home-window .indicator {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: @field;
+  color: @theme_dim_text;
+  font-size: 0.85em;
   font-feature-settings: "tnum";
 }
 
-window.home-window .tile-more > button {
-  min-width: 28px;
-  min-height: 28px;
-  padding: 0;
+window.home-window .indicator image {
+  -gtk-icon-size: 14px;
 }
 
-window.home-window .tile-picture {
+window.home-window .indicator.warning {
+  color: @theme_warning;
+  background: alpha(@theme_warning, 0.14);
+}
+
+/* Thermostat. */
+window.home-window .big-readout {
+  font-size: 2.2em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+  transition: color 160ms ease-out;
+}
+
+window.home-window .climate-action {
+  color: @theme_dim_text;
+  font-weight: 600;
+}
+
+window.home-window .setpoints > box {
+  padding: 8px 10px;
   border-radius: var(--nyx-radius-small);
   background: @field;
 }
 
-window.home-window .tile scale {
-  margin: 0 4px;
+window.home-window .setpoint-title {
+  color: @theme_dim_text;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+window.home-window .setpoint {
+  font-size: 1.3em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+/* Light color. */
+window.home-window button.color-button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 999px;
+}
+
+window.home-window .color-dot {
+  min-width: 18px;
+  min-height: 18px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.2);
+}
+
+window.home-window button.swatch {
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px alpha(@theme_text, 0.15);
+  color: #1b1b1f;
+}
+
+window.home-window button.swatch:hover {
+  box-shadow: inset 0 0 0 2px alpha(@theme_text, 0.45);
+}
+
+window.home-window button.swatch.selected {
+  box-shadow: 0 0 0 2px @theme_bg, 0 0 0 4px @theme_accent;
+}
+
+/* Media, readings, robots. */
+window.home-window .now-playing {
+  font-weight: 500;
+}
+
+window.home-window .readings {
+  padding: 6px 10px;
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+}
+
+window.home-window .reading-name {
+  color: @theme_dim_text;
+  font-size: 0.85em;
+}
+
+window.home-window .reading-value {
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+window.home-window .menu-popover button.menu-item {
+  padding: 6px 12px;
+}
+
+/* Scenes as chips at the top of a room. */
+window.home-window button.scene-chip {
+  min-height: 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+window.home-window .scene-chips {
+  margin-bottom: 4px;
+}
+
+/* Details popup. */
+window.home-window .row-value {
+  color: @theme_dim_text;
+  font-feature-settings: "tnum";
+}
+
+window.home-window expander.details-expander > title {
+  padding: 6px 0;
+}
+
+/* The picture viewer. */
+window.home-window scrolledwindow.viewer {
+  background: @theme_bg;
 }
 
 /* ---------- Overview ---------- */
@@ -272,4 +471,148 @@ window.home-window .canvas-feedback {
 window.home-window .canvas-banner {
   margin: 8px 10px 0;
   padding: 8px 12px;
+}
+
+/* ---------- Grid cards ---------- */
+
+window.home-window .device-card.size-h2 .setpoints > box,
+window.home-window .device-card.size-h2 .readings {
+  padding: 4px 8px;
+}
+
+window.home-window .setpoints.inactive {
+  opacity: 0.45;
+}
+
+window.home-window .toggle-row > box {
+  padding: 4px 10px;
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+}
+
+/* Scenes: colored tiles; the color comes from kind_colors.rs. */
+window.home-window .scene-tile {
+  padding: 12px 14px;
+  border-radius: var(--nyx-radius-card);
+  background: @theme_card;
+}
+
+window.home-window .scene-tile .scene-name {
+  font-weight: 600;
+}
+
+window.home-window .scene-tile:focus-visible {
+  outline: 2px solid alpha(@theme_accent, 0.8);
+  outline-offset: 2px;
+}
+
+window.home-window .scene-tile button.scene-more {
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  opacity: 0.55;
+}
+
+window.home-window .scene-tile:hover button.scene-more,
+window.home-window .scene-tile button.scene-more:focus-visible {
+  opacity: 1;
+}
+
+window.home-window .scene-tile.compact {
+  padding: 6px 12px;
+}
+
+window.home-window .scene-tile.compact .scene-name {
+  font-size: 0.92em;
+}
+
+/* Arrange mode: a shield over each card takes the pointer. */
+window.home-window .arrange-shield {
+  padding: 8px;
+  border-radius: var(--nyx-radius-card);
+  background: alpha(@theme_bg, 0.35);
+  box-shadow: inset 0 0 0 2px alpha(@theme_accent, 0.55);
+}
+
+window.home-window .arrange-shield:hover {
+  background: alpha(@theme_accent, 0.12);
+}
+
+window.home-window .arrange-shield:focus-visible {
+  box-shadow: inset 0 0 0 3px @theme_accent;
+}
+
+window.home-window .arrange-handle {
+  -gtk-icon-size: 18px;
+  padding: 4px;
+  border-radius: 999px;
+  background: @theme_card;
+  color: @theme_text;
+}
+
+window.home-window menubutton.size-pill > button {
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: @theme_card;
+  font-size: 0.85em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+window.home-window overlay.dragging {
+  opacity: 0.35;
+}
+
+/* Robot maps: Home's names over the integration's floor plan. */
+window.home-window .map-label {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: alpha(@theme_card, 0.88);
+  color: @theme_text;
+  font-weight: 600;
+  font-size: 0.92em;
+  box-shadow: 0 2px 8px alpha(black, 0.35);
+}
+
+window.home-window button.map-label {
+  min-height: 0;
+}
+
+window.home-window button.map-label.tappable:hover {
+  background: @kind_robot;
+  color: @theme_bg;
+}
+
+/* The robot window's side panel. */
+window.home-window scrolledwindow.robot-side {
+  background: @theme_card;
+  border-left: 1px solid alpha(@theme_border, 0.6);
+}
+
+window.home-window .robot-panel {
+  padding: 18px 18px 24px;
+}
+
+window.home-window .robot-state {
+  font-size: 1.5em;
+  font-weight: 600;
+}
+
+/* Live video. */
+window.home-window togglebutton.live-toggle:checked {
+  background: alpha(@theme_danger, 0.2);
+  color: @theme_danger;
+}
+
+window.home-window .live-banner {
+  padding: 10px 14px;
+  border-radius: var(--nyx-radius-card);
+  background: alpha(@theme_card, 0.94);
+  box-shadow: 0 6px 24px alpha(black, 0.4);
+}
+
+window.home-window .map-layer.small .map-label {
+  padding: 1px 6px;
+  font-size: 0.72em;
 }

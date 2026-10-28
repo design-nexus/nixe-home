@@ -2,8 +2,10 @@
 //! robots, energy and device health that need a glance.
 use crate::{
     app::{self, Home, Link},
-    connection, home_features, prefs, present,
-    tiles::{self, Tile},
+    cards, connection,
+    device::{Device, Kind},
+    grid::{self, CardGrid},
+    home_features, prefs, present,
 };
 use gtk::prelude::*;
 use nyx_ui::widgets;
@@ -20,7 +22,6 @@ pub struct Page {
     body: gtk::Box,
     customize: gtk::ToggleButton,
     editing: Cell<bool>,
-    tiles: RefCell<HashMap<String, Tile>>,
     summary: RefCell<Option<gtk::FlowBox>>,
     lists: RefCell<HashMap<&'static str, gtk::Box>>,
     shown_link: RefCell<Option<Link>>,
@@ -62,7 +63,6 @@ impl Page {
             body,
             customize,
             editing: Cell::new(false),
-            tiles: RefCell::new(HashMap::new()),
             summary: RefCell::new(None),
             lists: RefCell::new(HashMap::new()),
             shown_link: RefCell::new(None),
@@ -96,49 +96,31 @@ impl Page {
         *self.shown_link.borrow_mut() = None;
         self.customize.set_sensitive(true);
         self.stack.set_visible_child_name("content");
-        match changed {
-            Some(ids) if self.update(home, ids) => {}
-            _ => self.build(home),
-        }
-    }
-
-    /// Update in place; false when the layout must be built again.
-    fn update(&self, home: &Home, ids: &BTreeSet<String>) -> bool {
-        let tiles = self.tiles.borrow();
-        for id in ids {
-            let Some(entity) = home.entities.get(id) else {
-                return false;
-            };
-            for key in [format!("favorites:{id}"), format!("devices:{id}")] {
-                if let Some(tile) = tiles.get(&key) {
-                    if tile.signature != present::signature(entity) {
-                        return false;
-                    }
-                    tile.update(entity);
-                }
+        if changed.is_some() {
+            // Cards keep themselves current; the summary and lists are refilled.
+            if let Some(flow) = self.summary.borrow().as_ref() {
+                fill_summary(flow, home);
             }
+            for (id, list) in self.lists.borrow().iter() {
+                fill_list(id, list, home);
+            }
+            return;
         }
-        drop(tiles);
-        if let Some(flow) = self.summary.borrow().as_ref() {
-            fill_summary(flow, home);
-        }
-        for (id, list) in self.lists.borrow().iter() {
-            fill_list(id, list, home);
-        }
-        true
+        self.build(home);
     }
 
     fn build(&self, home: &Home) {
         clear(&self.body);
-        self.tiles.borrow_mut().clear();
         self.lists.borrow_mut().clear();
+        migrate_favorites(home);
+        let devices = home.device_list(false);
         *self.summary.borrow_mut() = None;
         let settings = prefs::get();
         let editing = self.editing.get();
         let order = section_order(&settings);
         if editing {
             let note = widgets::label(
-                "Reorder sections with the arrows and turn off the ones you don't need. Press Esc or the edit button when you're done.",
+                "Reorder sections with the arrows and turn off the ones you don't need. Drag cards to move them and use their size button to resize them. Press Esc or the edit button when you're done.",
                 "group-note",
             );
             note.set_wrap(true);
@@ -157,14 +139,14 @@ impl Page {
                     *self.summary.borrow_mut() = Some(flow.clone());
                     Some(flow.upcast::<gtk::Widget>())
                 }
-                "favorites" => Some(self.favorites(home, &settings.favorite_entities)),
-                "cameras" => {
-                    let robots = present::robot_devices(home.entities.values());
-                    self.devices(home, |e| {
-                        e.domain() == "camera" && !present::is_robot_camera(e, &robots)
-                    })
-                }
-                "robots" => self.devices(home, |e| matches!(e.domain(), "vacuum" | "lawn_mower")),
+                "favorites" => Some(favorites(home, &prefs::get().favorite_devices, editing)),
+                "cameras" => cameras_link(&devices),
+                "robots" => grid_of(
+                    home,
+                    "overview:robots",
+                    devices.iter().filter(|d| d.kind == Kind::Robot),
+                    editing,
+                ),
                 "energy" | "health" => {
                     let list = widgets::vbox(0);
                     list.add_css_class("group-list");
@@ -195,80 +177,122 @@ impl Page {
             }
         }
     }
+}
 
-    fn favorites(&self, home: &Home, favorites: &[String]) -> gtk::Widget {
-        let favs: Vec<_> = favorites
-            .iter()
-            .filter_map(|id| home.entities.get(id))
-            .collect();
-        if favs.is_empty() {
-            let row = widgets::hbox(12);
-            row.add_css_class("card");
-            row.add_css_class("hint-card");
-            let text = widgets::label(
-                "Pin the devices you use most. Open a device's details in Rooms and choose Add to Overview.",
-                "dim",
-            );
-            text.set_wrap(true);
-            text.set_hexpand(true);
-            row.append(&text);
-            let open = gtk::Button::with_label("Open Rooms");
-            open.set_valign(gtk::Align::Center);
-            open.connect_clicked(|_| app::show(app::Section::Rooms));
-            row.append(&open);
-            return row.upcast();
+/// Cards for `devices` on the card grid, in their saved order.
+fn grid_of<'a>(
+    home: &Home,
+    key: &str,
+    devices: impl Iterator<Item = &'a Device>,
+    editing: bool,
+) -> Option<gtk::Widget> {
+    let list: Vec<&Device> = devices.collect();
+    if list.is_empty() {
+        return None;
+    }
+    let g = CardGrid::new(
+        key,
+        cards::maker(list.iter().map(|d| (*d).clone()).collect(), true),
+    );
+    let ids: Vec<String> = list.iter().map(|d| d.id.clone()).collect();
+    let ids = if key == "overview:favorites" {
+        ids
+    } else {
+        let saved = prefs::get()
+            .card_order
+            .get(key)
+            .cloned()
+            .unwrap_or_default();
+        grid::ordered(&saved, ids)
+    };
+    for id in ids {
+        if let Some(d) = list.iter().find(|d| d.id == id) {
+            cards::add_to(&g, &id, cards::size_options(d, home));
         }
-        self.grid("favorites", favs.into_iter()).upcast()
     }
+    g.set_arranging(editing);
+    Some(g.upcast())
+}
 
-    fn devices(
-        &self,
-        home: &Home,
-        keep: impl Fn(&crate::ha::Entity) -> bool,
-    ) -> Option<gtk::Widget> {
-        let entities: Vec<_> = home
-            .entities
-            .values()
-            .filter(|e| keep(e) && !e.hidden)
-            .collect();
-        (!entities.is_empty()).then(|| self.grid("devices", entities.into_iter()).upcast())
+/// Pinned devices; a light its group hides still shows here.
+fn favorites(home: &Home, favorites: &[String], editing: bool) -> gtk::Widget {
+    let mut devices = home.device_list(true);
+    devices.retain(|d| !d.hidden);
+    let pinned: Vec<&Device> = favorites
+        .iter()
+        .filter_map(|id| devices.iter().find(|d| d.id == *id))
+        .collect();
+    if let Some(grid) = grid_of(home, "overview:favorites", pinned.into_iter(), editing) {
+        return grid;
     }
+    let row = widgets::hbox(12);
+    row.add_css_class("card");
+    row.add_css_class("hint-card");
+    let text = widgets::label(
+        "Pin the devices you use most. Open a device's details in Rooms and choose Add to Overview.",
+        "dim",
+    );
+    text.set_wrap(true);
+    text.set_hexpand(true);
+    row.append(&text);
+    let open = gtk::Button::with_label("Open Rooms");
+    open.set_valign(gtk::Align::Center);
+    open.connect_clicked(|_| app::show(app::Section::Rooms));
+    row.append(&open);
+    row.upcast()
+}
 
-    /// Tiles for `entities`: tall tiles in one grid, one-line tiles in another.
-    fn grid<'a>(
-        &self,
-        prefix: &str,
-        entities: impl Iterator<Item = &'a crate::ha::Entity>,
-    ) -> gtk::Box {
-        let column = widgets::vbox(12);
-        let (rich, plain): (Vec<_>, Vec<_>) = entities.partition(|e| tiles::is_rich(e));
-        let mut tiles = self.tiles.borrow_mut();
-        for part in [rich, plain] {
-            if part.is_empty() {
-                continue;
+/// A card that leads to the Cameras page, with how many there are.
+fn cameras_link(devices: &[Device]) -> Option<gtk::Widget> {
+    let count = devices.iter().filter(|d| d.kind == Kind::Camera).count();
+    if count == 0 {
+        return None;
+    }
+    let row = widgets::hbox(12);
+    row.add_css_class("card");
+    row.add_css_class("hint-card");
+    row.add_css_class("kind-camera");
+    let chip = gtk::Image::from_icon_name("camera-web-symbolic");
+    chip.add_css_class("chip");
+    row.append(&chip);
+    let text = widgets::vbox(2);
+    text.set_hexpand(true);
+    text.append(&widgets::label(
+        &present::plural(count, "camera"),
+        "card-name",
+    ));
+    text.append(&widgets::label("Their last pictures, by room", "card-sub"));
+    row.append(&text);
+    let open = gtk::Button::with_label("Open Cameras");
+    open.set_valign(gtk::Align::Center);
+    open.connect_clicked(|_| app::show(app::Section::Cameras));
+    row.append(&open);
+    Some(row.upcast())
+}
+
+/// Favorites used to be entities; pin their devices instead, once.
+fn migrate_favorites(home: &Home) {
+    let old = prefs::get().favorite_entities;
+    if old.is_empty() || home.entities.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = old
+        .iter()
+        .filter_map(|e| home.entities.get(e))
+        .map(|e| {
+            e.device_id
+                .clone()
+                .unwrap_or_else(|| format!("entity:{}", e.entity_id))
+        })
+        .collect();
+    prefs::update(|p| {
+        for id in ids {
+            if !p.favorite_devices.contains(&id) {
+                p.favorite_devices.push(id);
             }
-            let flow = tiles::grid();
-            for entity in part {
-                let tile = Tile::new(entity);
-                flow.insert(&tile.child, -1);
-                tiles.insert(format!("{prefix}:{}", entity.entity_id), tile);
-            }
-            let prefix = prefix.to_string();
-            flow.connect_child_activated(move |_, child| {
-                if let Some(app) = app::get()
-                    && let Some(tile) = app
-                        .overview
-                        .tiles
-                        .borrow()
-                        .get(&format!("{prefix}:{}", child.widget_name()))
-                {
-                    tile.activate();
-                }
-            });
-            column.append(&flow);
         }
-        column
-    }
+        p.favorite_entities.clear();
+    });
 }
 
 fn clear(container: &gtk::Box) {

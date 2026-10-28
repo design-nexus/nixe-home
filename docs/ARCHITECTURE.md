@@ -165,8 +165,8 @@ References: [Home Assistant WebSocket API](https://contributors.home-assistant.i
   bitmask and validated again before the REST service call. Mower start requires
   user confirmation. Vacuum area cleaning passes an area ID from the HA area
   registry to `vacuum.clean_area`; HA remains responsible for configured segment
-  mapping and safety. A vacuum map is shown only when an image entity on the
-  same device is named as a map.
+  mapping and safety. A robot's map is the image or camera entity on the same
+  device named as a map, the current map first; it opens in the viewer.
 - Energy and power sensors are shown with their own units. Device health reports
   unavailable entities, low battery sensors, and available updates. No energy
   totals are inferred across mixed units or unrelated meters.
@@ -188,9 +188,54 @@ References: [Home Assistant WebSocket API](https://contributors.home-assistant.i
   anything, so a mistyped token never replaces a working one.
 - **State and rendering.** `app.rs` owns the Home Assistant state. Live events
   update it and mark entities changed; a flush at most every 200 ms updates the
-  pages. Tiles (`tiles.rs`) update in place; a page's layout is rebuilt only
-  when entities appear or disappear, a tile's kind of control changes, or a
-  setting changes what is shown. Focus and scroll position survive updates.
+  pages. `device.rs` groups entities into devices with the device registry and
+  sorts each entity into controls, readings, settings or diagnostics. Cards
+  (`cards.rs`) register watchers for their entities and update in place; a
+  page's layout is rebuilt only when entities appear or disappear or a setting
+  changes what is shown. Focus and scroll position survive updates. The details
+  popup (`details.rs`) lists the rest of a device's entities with controls
+  limited to `ha::allowed` services. Per-kind colors (`kind_colors.rs`) come
+  from the active theme's swatches through the theme's `extra_colors` hook.
+- **Layout.** `grid.rs` is the card grid: rows of a fixed height and columns
+  (a multiple of four) that stretch to the width; cards are 1, 2 or 4 units
+  each way. `CardGrid` places a section's cards densely (each in the first
+  spot it fits) and handles Arrange mode: a shield over each card, drag and
+  drop with live reordering, Ctrl+arrow moves and a size menu. `Sections`
+  places sections skyline style (each where its top is lowest, on four-column
+  boundaries) and widens one into free columns beside it. Order, section order
+  and sizes are saved in preferences; a room's subset folds back into the full
+  order. The math is GTK-free and unit tested.
+- **Changing Home Assistant.** `ha::ws_command` sends one registry command
+  (`config/device_registry/update`, `config/entity_registry/update`) over its
+  own authenticated WebSocket. Light groups (`light_groups.rs`) go through the
+  `group` config flow, its options flow, and config entry deletion. All of them
+  need an administrator token; a refusal says so. After a change the app
+  reconnects, so the registry and live updates match.
+- **Live video.** `live.rs` keeps one libmpv player (nyx-playback) for the app,
+  rendered into a shared paintable on the main window's GL context. A stream is
+  Home Assistant's HLS playlist from the `camera/stream` WebSocket command; the
+  URL carries its own short-lived token and only goes to mpv. A new stream
+  takes over from the last, whose viewer is told. The viewer stops it after
+  three minutes unless asked to keep going, when the window closes, and on the
+  app's shutdown (the renderer goes before the player).
+- **Viewer and robot window.** `viewer::MapView` is the zoomable picture (an
+  exact-size clip, so pictures keep their aspect ratio), with an overlay for
+  Home's map layer; the picture viewer and `robot_window.rs` both use it. The
+  robot window's panel picks its controls by entity name suffix
+  (`robot_controls`, unit tested) and refreshes the floor plan while the robot
+  works.
+- **Robot maps.** `robot_map.rs` draws Home's layer over the integration's map
+  picture in the viewer. Vacuum positions come from the map camera's
+  calibration points (an affine fit of three point pairs), mower positions from
+  the mower map's projection (`/api/dreame_lawn_mower/mowing-map/…`). Names are
+  buttons in a `Fixed`; markers, zones, walls and the trail are drawn with
+  cairo; both follow the viewer's zoom. Tapping a name calls only the
+  allow-listed integration actions (`ha::allowed_integration`): clean a vacuum
+  segment, mow a mower zone. Neither integration exposes room or zone outlines,
+  so the floor plan stays the integration's picture.
+- **Pictures.** `viewer.rs` loads a still once per session (callers waiting on
+  the same image share one request) and shows it in a viewer window with fit,
+  zoom at the pointer, pan and refresh.
 - **Presentation.** `present.rs` holds the GTK-free rules for friendly states,
   icons, which control a device gets, Overview summaries, device health, and
   readable descriptions of automations and runs. It is unit tested.

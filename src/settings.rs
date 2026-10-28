@@ -12,7 +12,7 @@ const GROUPS: &[(&str, &str, &str)] = &[
         "preferences-desktop-appearance-symbolic",
         "Theme, accent and motion",
     ),
-    ("Rooms", "user-home-symbolic", "Which entities are listed"),
+    ("Rooms", "user-home-symbolic", "Which devices are listed"),
     (
         "Home Assistant",
         "network-server-symbolic",
@@ -45,6 +45,47 @@ fn group(body: &gtk::Box, title: &str) -> gtk::Box {
     wrap.append(&card);
     body.append(&wrap);
     card
+}
+
+/// Devices hidden in Nyx Home, each with Unhide.
+fn hidden_devices(rooms: &gtk::Box) {
+    let hidden = prefs::get().hidden_devices;
+    let names: Vec<(String, String)> = app::get()
+        .map(|app| {
+            let devices = app.home.borrow().device_list(true);
+            hidden
+                .iter()
+                .map(|id| {
+                    let name = devices
+                        .iter()
+                        .find(|d| d.id == *id)
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| "A device no longer in Home Assistant".into());
+                    (id.clone(), name)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.is_empty() {
+        rooms.append(&widgets::row(
+            "Hidden devices",
+            "None. Hide a device from its details (its ⋯ button).",
+            None,
+        ));
+        return;
+    }
+    for (id, name) in names {
+        let unhide = gtk::Button::with_label("Unhide");
+        unhide.set_valign(gtk::Align::Center);
+        unhide.update_property(&[gtk::accessible::Property::Label(&format!("Unhide {name}"))]);
+        let row = widgets::row(&name, "Hidden in Nyx Home", Some(unhide.upcast_ref()));
+        let r = row.clone();
+        unhide.connect_clicked(move |_| {
+            crate::details::set_hidden(&id, false);
+            r.set_visible(false);
+        });
+        rooms.append(&row);
+    }
 }
 
 fn page() -> (gtk::Widget, gtk::Box) {
@@ -134,6 +175,7 @@ fn page() -> (gtk::Widget, gtk::Box) {
         },
     );
     rooms.append(&overview);
+    hidden_devices(&rooms);
 
     let ha = group(&body, "Home Assistant");
     let base = app::get()

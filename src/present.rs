@@ -3,7 +3,6 @@
 //! Kept free of GTK so it can be tested.
 use crate::ha::Entity;
 use nyx_home::automation::{NodeKind, Owner, Workflow};
-use serde_json::Value;
 
 pub fn unavailable(e: &Entity) -> bool {
     e.state == "unavailable"
@@ -15,35 +14,6 @@ fn device_class(e: &Entity) -> &str {
 
 fn features(e: &Entity) -> u64 {
     e.attributes["supported_features"].as_u64().unwrap_or(0)
-}
-
-pub fn icon(e: &Entity) -> &'static str {
-    match (e.domain(), device_class(e)) {
-        ("light", _) => "display-brightness-symbolic",
-        ("switch" | "input_boolean", _) => "system-shutdown-symbolic",
-        ("fan", _) => "weather-windy-symbolic",
-        ("climate" | "humidifier" | "water_heater", _) => "weather-few-clouds-symbolic",
-        ("lock", _) if e.state == "locked" => "changes-prevent-symbolic",
-        ("lock", _) => "changes-allow-symbolic",
-        ("cover", _) => "go-down-symbolic",
-        ("media_player", "tv") => "tv-symbolic",
-        ("media_player", _) => "multimedia-player-symbolic",
-        ("camera", _) => "camera-web-symbolic",
-        ("vacuum" | "lawn_mower", _) => "applications-engineering-symbolic",
-        ("scene", _) => "applications-graphics-symbolic",
-        ("script" | "automation", _) => "system-run-symbolic",
-        ("button" | "input_button", _) => "media-playback-start-symbolic",
-        ("person" | "device_tracker", _) => "avatar-default-symbolic",
-        ("update", _) => "software-update-available-symbolic",
-        ("weather", _) => "weather-clear-symbolic",
-        ("binary_sensor", "door" | "garage_door" | "opening" | "window") => "user-home-symbolic",
-        ("binary_sensor", "motion" | "occupancy" | "presence") => "view-reveal-symbolic",
-        ("sensor", "battery") => "battery-good-symbolic",
-        ("sensor", "temperature" | "humidity" | "pressure") => "weather-few-clouds-symbolic",
-        ("sensor", "energy" | "power" | "current" | "voltage") => "system-shutdown-symbolic",
-        ("sensor", "illuminance") => "display-brightness-symbolic",
-        _ => "dialog-information-symbolic",
-    }
 }
 
 /// A tile's name: the entity's name without its device's name in front
@@ -59,18 +29,6 @@ pub fn short_name(e: &Entity) -> String {
         Some(rest) if rest.trim() == device => device,
         Some(rest) if !rest.trim().is_empty() && rest.starts_with(' ') => sentence(rest.trim()),
         _ => name,
-    }
-}
-
-/// A tile's second line: the device, when the name leaves it out, and the state.
-pub fn tile_detail(e: &Entity) -> String {
-    let state = state_text(e);
-    let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-    match e.device_name.as_deref() {
-        Some(device) if short_name(e) != words(&e.name()) && short_name(e) != words(device) => {
-            format!("{} · {state}", words(device))
-        }
-        _ => state,
     }
 }
 
@@ -207,44 +165,6 @@ pub fn state_text(e: &Entity) -> String {
     }
 }
 
-/// What a tile's main control does.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Primary {
-    Toggle(bool),
-    Lock {
-        locked: bool,
-    },
-    Press {
-        label: &'static str,
-        service: &'static str,
-    },
-    None,
-}
-
-pub fn primary(e: &Entity) -> Primary {
-    if unavailable(e) {
-        return Primary::None;
-    }
-    match e.domain() {
-        // Sirens are left out: a mis-click shouldn't set one off.
-        "light" | "switch" | "fan" | "input_boolean" | "automation" | "humidifier" => {
-            Primary::Toggle(e.state == "on")
-        }
-        "lock" => Primary::Lock {
-            locked: e.state == "locked",
-        },
-        "scene" | "script" => Primary::Press {
-            label: "Run",
-            service: "turn_on",
-        },
-        "button" | "input_button" => Primary::Press {
-            label: "Press",
-            service: "press",
-        },
-        _ => Primary::None,
-    }
-}
-
 pub fn toggle_service(on: bool) -> &'static str {
     if on { "turn_on" } else { "turn_off" }
 }
@@ -265,36 +185,6 @@ pub fn brightness(e: &Entity) -> Option<f64> {
     )
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Climate {
-    pub target: f64,
-    pub step: f64,
-    pub min: f64,
-    pub max: f64,
-}
-
-pub fn climate(e: &Entity) -> Option<Climate> {
-    if e.domain() != "climate" || unavailable(e) {
-        return None;
-    }
-    let a = &e.attributes;
-    Some(Climate {
-        target: a["temperature"].as_f64()?,
-        step: a["target_temp_step"].as_f64().unwrap_or(0.5),
-        min: a["min_temp"].as_f64().unwrap_or(7.0),
-        max: a["max_temp"].as_f64().unwrap_or(35.0),
-    })
-}
-
-pub fn climate_target(c: &Climate, up: bool) -> f64 {
-    let next = if up {
-        c.target + c.step
-    } else {
-        c.target - c.step
-    };
-    (next / c.step).round() * c.step
-}
-
 /// Cover buttons the entity supports: (label, service, icon).
 pub fn cover_actions(e: &Entity) -> Vec<(&'static str, &'static str, &'static str)> {
     if e.domain() != "cover" || unavailable(e) {
@@ -310,60 +200,6 @@ pub fn cover_actions(e: &Entity) -> Vec<(&'static str, &'static str, &'static st
     .filter(|(bit, ..)| f & bit != 0)
     .map(|(_, label, service, icon)| (label, service, icon))
     .collect()
-}
-
-/// Whether a media player can play/pause, and whether it's playing.
-pub fn media(e: &Entity) -> Option<bool> {
-    (e.domain() == "media_player" && !unavailable(e) && features(e) & (1 | 16384) != 0)
-        .then(|| e.state == "playing")
-}
-
-/// Whether an entity belongs on the Rooms page.
-pub fn listed(e: &Entity, show_all: bool) -> bool {
-    if matches!(
-        e.domain(),
-        "zone"
-            | "persistent_notification"
-            | "conversation"
-            | "tts"
-            | "stt"
-            | "tag"
-            | "event"
-            | "automation"
-            | "update"
-            | "image"
-            | "todo"
-            | "wake_word"
-            | "assist_satellite"
-    ) {
-        return show_all && !matches!(e.domain(), "persistent_notification" | "zone");
-    }
-    show_all || (e.entity_category.is_none() && !e.hidden && e.domain() != "device_tracker")
-}
-
-/// The devices that are robots (vacuums and mowers).
-pub fn robot_devices<'a>(
-    entities: impl IntoIterator<Item = &'a Entity>,
-) -> std::collections::HashSet<String> {
-    entities
-        .into_iter()
-        .filter(|e| matches!(e.domain(), "vacuum" | "lawn_mower"))
-        .filter_map(|e| e.device_id.clone())
-        .collect()
-}
-
-/// A camera or image that belongs to a robot, such as its map or its own
-/// video. It is shown on the robot's tile, not with the home's cameras.
-pub fn is_robot_camera(e: &Entity, robots: &std::collections::HashSet<String>) -> bool {
-    matches!(e.domain(), "camera" | "image")
-        && e.device_id.as_ref().is_some_and(|id| robots.contains(id))
-}
-
-/// Any entity on a robot's device other than the robot itself: its map,
-/// sensors and dozens of settings. Rooms shows the robot as one tile.
-pub fn is_robot_part(e: &Entity, robots: &std::collections::HashSet<String>) -> bool {
-    !matches!(e.domain(), "vacuum" | "lawn_mower")
-        && e.device_id.as_ref().is_some_and(|id| robots.contains(id))
 }
 
 /// The map to show on a robot's tile: a map camera or image on the robot's
@@ -399,28 +235,6 @@ pub fn robot_map<'a>(
                 e.entity_id.clone(),
             )
         })
-}
-
-/// What a tile is built from. When this changes, the tile is built again;
-/// otherwise it is updated in place.
-pub fn signature(e: &Entity) -> String {
-    let control = match primary(e) {
-        Primary::Toggle(_) => "toggle",
-        Primary::Lock { .. } => "lock",
-        Primary::Press { label, .. } => label,
-        Primary::None => "none",
-    };
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}",
-        e.domain(),
-        device_class(e),
-        features(e),
-        control,
-        brightness(e).is_some(),
-        climate(e).is_some(),
-        unavailable(e),
-        e.area_name.as_deref().unwrap_or("")
-    )
 }
 
 /// Something about a device that needs attention.
@@ -685,39 +499,10 @@ pub fn status(status: &str) -> (&'static str, &'static str, &'static str) {
     }
 }
 
-/// A short attribute list for an entity's details.
-pub fn details(e: &Entity) -> Vec<(String, String)> {
-    let mut rows = vec![("Entity".to_string(), e.entity_id.clone())];
-    if let Some(device) = &e.device_name {
-        rows.push(("Device".into(), device.clone()));
-    }
-    if let Some(area) = &e.area_name {
-        rows.push(("Area".into(), area.clone()));
-    }
-    rows.push(("State".into(), e.state.clone()));
-    if let Some(category) = &e.entity_category {
-        rows.push(("Category".into(), sentence(category)));
-    }
-    for key in [
-        "device_class",
-        "unit_of_measurement",
-        "brightness",
-        "temperature",
-    ] {
-        if let Some(value) = e.attributes.get(key).filter(|v| !v.is_null()) {
-            let text = match value {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            rows.push((sentence(key), text));
-        }
-    }
-    rows
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use serde_json::json;
 
     fn entity(id: &str, state: &str, attributes: Value) -> Entity {
@@ -791,77 +576,6 @@ mod tests {
     }
 
     #[test]
-    fn controls_follow_the_domain() {
-        assert_eq!(
-            primary(&entity("switch.fan", "off", json!({}))),
-            Primary::Toggle(false)
-        );
-        assert_eq!(
-            primary(&entity("lock.front", "locked", json!({}))),
-            Primary::Lock { locked: true }
-        );
-        assert_eq!(
-            primary(&entity("switch.fan", "unavailable", json!({}))),
-            Primary::None
-        );
-        assert_eq!(
-            cover_actions(&entity(
-                "cover.blind",
-                "open",
-                json!({"supported_features": 3})
-            ))
-            .iter()
-            .map(|a| a.1)
-            .collect::<Vec<_>>(),
-            ["open_cover", "close_cover"]
-        );
-    }
-
-    #[test]
-    fn switching_a_device_keeps_its_tile() {
-        let off = entity(
-            "light.desk",
-            "off",
-            json!({"supported_color_modes": ["brightness"]}),
-        );
-        let on = entity(
-            "light.desk",
-            "on",
-            json!({"supported_color_modes": ["brightness"], "brightness": 200}),
-        );
-        assert_eq!(signature(&off), signature(&on));
-        assert_ne!(
-            signature(&off),
-            signature(&entity("light.desk", "unavailable", json!({})))
-        );
-    }
-
-    #[test]
-    fn climate_steps_round_to_the_step() {
-        let c = Climate {
-            target: 21.0,
-            step: 0.5,
-            min: 7.0,
-            max: 35.0,
-        };
-        assert_eq!(climate_target(&c, true), 21.5);
-        assert_eq!(climate_target(&c, false), 20.5);
-    }
-
-    #[test]
-    fn rooms_leave_out_diagnostics_and_hidden_entities() {
-        let mut e = entity("sensor.signal", "-60", json!({}));
-        assert!(listed(&e, false));
-        e.entity_category = Some("diagnostic".into());
-        assert!(!listed(&e, false));
-        assert!(listed(&e, true));
-        assert!(!listed(
-            &entity("automation.lights", "on", json!({})),
-            false
-        ));
-    }
-
-    #[test]
     fn summary_counts_what_matters() {
         let entities = [
             entity("light.a", "on", json!({})),
@@ -884,11 +598,9 @@ mod tests {
         );
         e.device_name = Some("Air Purifier".into());
         assert_eq!(short_name(&e), "Air quality");
-        assert_eq!(tile_detail(&e), "Air Purifier · Excellent");
         let mut lamp = entity("light.lamp", "off", json!({"friendly_name": "BR Lamp-L"}));
         lamp.device_name = Some("BR Lamp-L".into());
         assert_eq!(short_name(&lamp), "BR Lamp-L");
-        assert_eq!(tile_detail(&lamp), "Off");
         let mut vacuum = entity(
             "vacuum.z60",
             "docked",
@@ -896,69 +608,29 @@ mod tests {
         );
         vacuum.device_name = Some("Z60 Ultra".into());
         assert_eq!(short_name(&vacuum), "Z60 Ultra");
-        assert_eq!(tile_detail(&vacuum), "Docked");
     }
 
     #[test]
-    fn robots_keep_their_maps_and_cameras() {
-        let on = |mut e: Entity, device: &str| {
-            e.device_id = Some(device.into());
+    fn robots_show_their_current_map() {
+        let on = |mut e: Entity| {
+            e.device_id = Some("vac".into());
             e
         };
-        let vacuum = on(entity("vacuum.z60", "docked", json!({})), "vac");
-        let current = on(
-            entity(
-                "camera.z60_map",
-                "2026-10-27",
-                json!({"friendly_name": "Z60 Current Map"}),
-            ),
-            "vac",
-        );
-        let saved = on(
-            entity(
-                "camera.z60_map_1",
-                "2026-10-27",
-                json!({"friendly_name": "Z60 Saved Map 1"}),
-            ),
-            "vac",
-        );
-        let doorbell = on(
-            entity(
-                "camera.doorbell",
-                "idle",
-                json!({"friendly_name": "Doorbell"}),
-            ),
-            "eufy",
-        );
-        let mower = on(entity("lawn_mower.lidax", "docked", json!({})), "mow");
-        let video = on(
-            entity(
-                "camera.lidax_live_video",
-                "unavailable",
-                json!({"friendly_name": "LiDAX Live Video"}),
-            ),
-            "mow",
-        );
-        let all = [
-            vacuum.clone(),
-            saved.clone(),
-            current.clone(),
-            doorbell.clone(),
-            mower,
-            video.clone(),
-        ];
+        let vacuum = on(entity("vacuum.z60", "docked", json!({})));
+        let current = on(entity(
+            "camera.z60_map",
+            "2026-10-27",
+            json!({"friendly_name": "Z60 Current Map"}),
+        ));
+        let saved = on(entity(
+            "camera.z60_map_1",
+            "2026-10-27",
+            json!({"friendly_name": "Z60 Saved Map 1"}),
+        ));
+        let all = [vacuum.clone(), saved, current];
         assert_eq!(
             robot_map(&vacuum, &all).map(|e| e.entity_id.as_str()),
             Some("camera.z60_map")
-        );
-        let robots = robot_devices(&all);
-        assert!(is_robot_camera(&saved, &robots) && is_robot_camera(&video, &robots));
-        assert!(!is_robot_camera(&doorbell, &robots));
-        assert!(is_robot_part(&saved, &robots) && !is_robot_part(&vacuum, &robots));
-        assert!(!is_robot_part(&doorbell, &robots));
-        assert_eq!(
-            primary(&entity("siren.backyard", "off", json!({}))),
-            Primary::None
         );
     }
 

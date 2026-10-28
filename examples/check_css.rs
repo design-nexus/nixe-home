@@ -3,13 +3,17 @@
 //! `cargo run --example check_css`.
 use std::{cell::Cell, rc::Rc};
 
+#[path = "../src/kind_colors.rs"]
+mod kind_colors;
+
 fn main() {
     gtk::init().expect("no display");
     let errors = Rc::new(Cell::new(0));
     for theme in nyx_theme::bundled() {
         let css = format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             nyx_theme::sheet_for_check("home-window", &theme, true),
+            kind_colors::css(&theme.look.swatches, &theme.palette.accent),
             include_str!("../src/style.css")
         );
         let provider = gtk::CssProvider::new();

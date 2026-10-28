@@ -1,29 +1,24 @@
-//! Rooms: every device, grouped by Home Assistant area, with search and an
-//! area filter. Tiles are kept across updates and only rebuilt when the
-//! devices themselves change.
+//! Rooms: one card per device, in sections by type (Lights, Climate, …) laid
+//! out on the card grid, with the room's scenes as colored tiles. The room
+//! chips pick a room; All shows every room. Cards keep themselves current;
+//! the layout is rebuilt only when devices come or go or another room is
+//! chosen. Arrange mode moves and resizes cards and sections.
 use crate::{
     app::{self, Home, Link},
-    overview, prefs, present,
-    tiles::{self, Tile},
+    cards,
+    device::{self, Device, Kind},
+    grid::{self, CardGrid, Sections},
+    light_groups, overview, prefs,
 };
-use gtk::prelude::*;
+use gtk::{gdk, glib, prelude::*};
 use nyx_ui::widgets;
 use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
 };
 
 const OTHER: &str = "Other";
-
-/// Whether an entity gets a tile in Rooms. A robot is one tile with its
-/// controls and map; its other entities appear only when showing everything.
-fn shown(
-    e: &crate::ha::Entity,
-    show_all: bool,
-    robots: &std::collections::HashSet<String>,
-) -> bool {
-    present::listed(e, show_all) && (show_all || !present::is_robot_part(e, robots))
-}
+const SCENES: &str = "scenes";
 
 pub struct Page {
     pub root: gtk::Widget,
@@ -31,15 +26,52 @@ pub struct Page {
     stack: gtk::Stack,
     empty: gtk::Box,
     chips: gtk::FlowBox,
-    groups: gtk::Box,
+    flow: Sections,
     no_match: gtk::Box,
     show_all: gtk::ToggleButton,
-    tiles: RefCell<HashMap<String, Tile>>,
-    /// Area name per group, with its heading and grids.
-    sections: RefCell<Vec<(String, gtk::Label, Vec<gtk::FlowBox>)>>,
+    arrange: gtk::ToggleButton,
+    reset: gtk::Button,
+    arranging: Cell<bool>,
+    devices: RefCell<Vec<Device>>,
+    /// Each section's key and heading, to count what search leaves.
+    headings: RefCell<Vec<(String, String, gtk::Label)>>,
     area: RefCell<Option<String>>,
     query: RefCell<String>,
     shown_link: RefCell<Option<Link>>,
+}
+
+/// The Arrange button and its Reset, shared by Rooms and Cameras.
+pub fn arrange_buttons(actions: &gtk::Box) -> (gtk::ToggleButton, gtk::Button) {
+    let reset = gtk::Button::with_label("Reset");
+    reset.set_valign(gtk::Align::Center);
+    reset.set_tooltip_text(Some(
+        "Put this page's cards back in their first order and sizes",
+    ));
+    reset.set_visible(false);
+    actions.append(&reset);
+    let arrange = gtk::ToggleButton::new();
+    arrange.set_icon_name("view-app-grid-symbolic");
+    arrange.add_css_class("bar-button");
+    arrange.set_valign(gtk::Align::Center);
+    arrange.set_tooltip_text(Some("Arrange cards: drag them, change their size"));
+    arrange.update_property(&[gtk::accessible::Property::Label("Arrange cards")]);
+    actions.append(&arrange);
+    (arrange, reset)
+}
+
+/// Esc leaves Arrange mode.
+pub fn escape_leaves(root: &impl IsA<gtk::Widget>, arrange: &gtk::ToggleButton) {
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let arrange = arrange.clone();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape && arrange.is_active() {
+            arrange.set_active(false);
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    root.add_controller(keys);
 }
 
 impl Page {
@@ -60,8 +92,8 @@ impl Page {
         chips.set_valign(gtk::Align::Start);
         chips.update_property(&[gtk::accessible::Property::Label("Rooms")]);
         body.append(&chips);
-        let groups = widgets::vbox(0);
-        body.append(&groups);
+        let flow = Sections::new("rooms");
+        body.append(&flow);
         let no_match = widgets::vbox(0);
         no_match.set_visible(false);
         body.append(&no_match);
@@ -72,14 +104,15 @@ impl Page {
             .build();
         stack.add_named(&scroll, Some("content"));
         let actions = widgets::hbox(2);
+        let (arrange, reset) = arrange_buttons(&actions);
         let show_all = gtk::ToggleButton::new();
         show_all.set_icon_name("view-reveal-symbolic");
         show_all.add_css_class("bar-button");
         show_all.set_valign(gtk::Align::Center);
-        show_all.set_tooltip_text(Some("Show diagnostic and hidden entities"));
-        show_all.update_property(&[gtk::accessible::Property::Label(
-            "Show diagnostic and hidden entities",
-        )]);
+        show_all.set_tooltip_text(Some(
+            "Also show hidden devices and ones with only diagnostic entities",
+        ));
+        show_all.update_property(&[gtk::accessible::Property::Label("Show every device")]);
         show_all.set_active(prefs::get().show_all_entities);
         show_all.connect_toggled(|button| {
             let on = button.is_active();
@@ -89,20 +122,68 @@ impl Page {
             }
         });
         actions.append(&show_all);
+        arrange.connect_toggled(|b| {
+            if let Some(app) = app::get() {
+                app.rooms.set_arranging(b.is_active());
+            }
+        });
+        reset.connect_clicked(|_| {
+            if let Some(app) = app::get() {
+                let ids: Vec<String> = app
+                    .rooms
+                    .flow
+                    .grids()
+                    .iter()
+                    .flat_map(|g| g.ids())
+                    .collect();
+                grid::reset("rooms", &ids);
+                app::rebuild();
+            }
+        });
+        escape_leaves(&stack, &arrange);
         Self {
             root: stack.clone().upcast(),
             actions,
             stack,
             empty,
             chips,
-            groups,
+            flow,
             no_match,
             show_all,
-            tiles: RefCell::new(HashMap::new()),
-            sections: RefCell::new(Vec::new()),
+            arrange,
+            reset,
+            arranging: Cell::new(false),
+            devices: RefCell::new(Vec::new()),
+            headings: RefCell::new(Vec::new()),
             area: RefCell::new(None),
             query: RefCell::new(String::new()),
             shown_link: RefCell::new(None),
+        }
+    }
+
+    /// Developer aid: open on one room's tab.
+    pub fn show_room(&self, room: &str, home: &Home) {
+        *self.area.borrow_mut() = Some(room.to_string());
+        self.build(home, prefs::get().show_all_entities);
+    }
+
+    /// Developer aid: open in Arrange mode.
+    pub fn start_arranging(&self) {
+        self.arrange.set_active(true);
+    }
+
+    fn set_arranging(&self, on: bool) {
+        if self.arranging.replace(on) == on {
+            return;
+        }
+        self.flow.set_arranging(on);
+        self.reset.set_visible(on);
+        if self.arrange.is_active() != on {
+            self.arrange.set_active(on);
+        }
+        if !on {
+            // Sizes are shared with other pages.
+            app::rebuild();
         }
     }
 
@@ -111,7 +192,8 @@ impl Page {
         self.filter(home);
     }
 
-    pub fn refresh(&self, home: &Home, changed: Option<&BTreeSet<String>>) {
+    /// Rebuild the layout. Live changes reach the cards on their own.
+    pub fn refresh(&self, home: &Home, changed: bool) {
         if !home.loaded() {
             if self.shown_link.borrow().as_ref() != Some(&home.link) {
                 overview::set_empty(&self.empty, &home.link);
@@ -122,64 +204,40 @@ impl Page {
         }
         *self.shown_link.borrow_mut() = None;
         self.stack.set_visible_child_name("content");
+        if changed {
+            return;
+        }
         let show_all = prefs::get().show_all_entities;
         if self.show_all.is_active() != show_all {
             self.show_all.set_active(show_all);
         }
-        if let Some(ids) = changed {
-            let robots = present::robot_devices(home.entities.values());
-            let tiles = self.tiles.borrow();
-            let in_place = ids
-                .iter()
-                .all(|id| match (home.entities.get(id), tiles.get(id)) {
-                    (Some(entity), Some(tile)) => {
-                        let same = tile.signature == present::signature(entity);
-                        if same {
-                            tile.update(entity);
-                        }
-                        same
-                    }
-                    (Some(entity), None) => !shown(entity, show_all, &robots),
-                    (None, _) => false,
-                });
-            drop(tiles);
-            if in_place {
-                self.filter(home);
-                return;
-            }
-        }
         self.build(home, show_all);
     }
 
+    /// The room chips, then the sections for the chosen room.
     fn build(&self, home: &Home, show_all: bool) {
-        let robots = present::robot_devices(home.entities.values());
-        let mut groups: BTreeMap<String, Vec<&crate::ha::Entity>> = BTreeMap::new();
-        for entity in home
-            .entities
-            .values()
-            .filter(|e| shown(e, show_all, &robots))
-        {
-            groups
-                .entry(entity.area_name.clone().unwrap_or_else(|| OTHER.into()))
-                .or_default()
-                .push(entity);
-        }
-        let mut order: Vec<String> = home
+        let devices = home.device_list(show_all);
+        let scenes = device::scenes(&home.entities);
+        let mut names: Vec<String> = home
             .areas
             .iter()
             .map(|a| a.name.clone())
-            .filter(|name| groups.contains_key(name))
+            .filter(|name| {
+                devices.iter().any(|d| d.area.as_ref() == Some(name)) || scenes.contains_key(name)
+            })
             .collect();
-        for name in groups.keys() {
-            if name != OTHER && !order.contains(name) {
-                order.push(name.clone());
+        for d in &devices {
+            if let Some(area) = &d.area
+                && !names.contains(area)
+            {
+                names.push(area.clone());
             }
         }
-        if groups.contains_key(OTHER) {
-            order.push(OTHER.into());
+        if devices.iter().any(|d| d.area.is_none()) || scenes.contains_key(OTHER) {
+            names.push(OTHER.into());
         }
         if let Some(area) = self.area.borrow().clone()
-            && !order.contains(&area)
+            && !names.contains(&area)
         {
             *self.area.borrow_mut() = None;
         }
@@ -189,7 +247,7 @@ impl Page {
         }
         let first = gtk::ToggleButton::with_label("All");
         first.add_css_class("chip");
-        for name in std::iter::once(None).chain(order.iter().map(Some)) {
+        for name in std::iter::once(None).chain(names.iter().map(Some)) {
             let chip = match name {
                 None => first.clone(),
                 Some(name) => {
@@ -207,7 +265,7 @@ impl Page {
                 }
                 if let Some(app) = app::get() {
                     *app.rooms.area.borrow_mut() = area.clone();
-                    app.rooms.filter(&app.home.borrow());
+                    app.rooms.fill(&app.home.borrow());
                 }
             });
             self.chips.insert(&chip, -1);
@@ -217,110 +275,173 @@ impl Page {
             c.set_focusable(false);
             child = c.next_sibling();
         }
+        *self.devices.borrow_mut() = devices;
+        self.fill(home);
+    }
 
-        let mut old = std::mem::take(&mut *self.tiles.borrow_mut());
-        let mut tiles = HashMap::new();
-        while let Some(child) = self.groups.first_child() {
-            self.groups.remove(&child);
+    /// The sections for the chosen room (every room for All).
+    fn fill(&self, home: &Home) {
+        let area = self.area.borrow().clone();
+        let in_room = |a: Option<&String>| match &area {
+            None => true,
+            Some(want) if want == OTHER => a.is_none(),
+            Some(want) => a == Some(want),
+        };
+        let devices = self.devices.borrow();
+        let shown: Vec<&Device> = devices
+            .iter()
+            .filter(|d| in_room(d.area.as_ref()))
+            .collect();
+        let show_area = area.is_none();
+        let order = prefs::get().card_order;
+        let saved = |key: &str| order.get(key).cloned().unwrap_or_default();
+        let maker = cards::maker(shown.iter().map(|d| (*d).clone()).collect(), show_area);
+
+        self.flow.clear();
+        // Each section's key, title, heading button and cards with their sizes.
+        type Cards = Vec<(String, Vec<grid::Size>)>;
+        let mut built: Vec<(String, String, Option<gtk::Widget>, Cards)> = Vec::new();
+
+        let scenes = device::scenes(&home.entities);
+        let p = prefs::get();
+        let scene_ids: Vec<String> = match &area {
+            None => scenes.values().flatten().cloned().collect(),
+            Some(a) => scenes.get(a).cloned().unwrap_or_default(),
         }
-        let mut sections = Vec::new();
-        for name in order {
-            let mut entities = groups.remove(&name).unwrap_or_default();
-            entities.sort_by_key(|e| {
-                (
-                    matches!(present::primary(e), present::Primary::None) as u8,
-                    e.name().to_lowercase(),
-                )
-            });
-            let heading = widgets::label("", "group-title");
-            self.groups.append(&heading);
-            let (rich, plain): (Vec<_>, Vec<_>) =
-                entities.into_iter().partition(|e| tiles::is_rich(e));
-            let mut flows = Vec::new();
-            for part in [rich, plain] {
-                if part.is_empty() {
-                    continue;
+        .into_iter()
+        .filter(|id| p.show_all_entities || !p.hidden_devices.contains(&format!("entity:{id}")))
+        .collect();
+        if !scene_ids.is_empty() {
+            let ids = grid::ordered(&saved(&format!("rooms:{SCENES}")), scene_ids);
+            let list = ids
+                .into_iter()
+                .map(|id| (id, cards::SCENE_SIZES.to_vec()))
+                .collect();
+            built.push((SCENES.into(), "Scenes".into(), None, list));
+        }
+
+        let mut by_kind: BTreeMap<Kind, Vec<&Device>> = BTreeMap::new();
+        for d in &shown {
+            by_kind.entry(d.kind).or_default().push(d);
+        }
+        let room_sets: Vec<(String, Vec<String>)> = home
+            .room_light_sets()
+            .into_iter()
+            .filter(|(room, _)| in_room(Some(room)))
+            .collect();
+        for (kind, mut list) in by_kind {
+            let mut ids: Cards = Vec::new();
+            if kind == Kind::Light {
+                // Groups first: Home Assistant's, then each room's lights.
+                list.sort_by_key(|d| d.members.is_none());
+                let groups = list.iter().take_while(|d| d.members.is_some()).count();
+                for d in &list[..groups] {
+                    ids.push((d.id.clone(), cards::size_options(d, home)));
                 }
-                let flow = tiles::grid();
-                flow.update_property(&[gtk::accessible::Property::Label(&name)]);
-                for entity in part {
-                    let tile = match old.remove(&entity.entity_id) {
-                        Some(tile) if tile.signature == present::signature(entity) => {
-                            if let Some(parent) = tile.child.parent().and_downcast::<gtk::FlowBox>()
-                            {
-                                parent.remove(&tile.child);
-                            }
-                            tile.update(entity);
-                            tile
-                        }
-                        _ => Tile::new(entity),
-                    };
-                    flow.insert(&tile.child, -1);
-                    tiles.insert(entity.entity_id.clone(), tile);
+                for (room, _) in &room_sets {
+                    ids.push((
+                        format!("{}{room}", cards::ROOM_LIGHTS),
+                        cards::ROOM_LIGHT_SIZES.to_vec(),
+                    ));
                 }
-                flow.connect_child_activated(|_, child| {
-                    if let Some(app) = app::get()
-                        && let Some(tile) =
-                            app.rooms.tiles.borrow().get(child.widget_name().as_str())
-                    {
-                        tile.activate();
-                    }
-                });
-                if !flows.is_empty() {
-                    flow.set_margin_top(12);
+                for d in &list[groups..] {
+                    ids.push((d.id.clone(), cards::size_options(d, home)));
                 }
-                self.groups.append(&flow);
-                flows.push(flow);
+            } else {
+                for d in list {
+                    ids.push((d.id.clone(), cards::size_options(d, home)));
+                }
             }
-            sections.push((name, heading, flows));
+            let options: BTreeMap<String, Vec<grid::Size>> = ids.iter().cloned().collect();
+            let default: Vec<String> = ids.into_iter().map(|(id, _)| id).collect();
+            let key = format!("rooms:{}", kind.key());
+            let ids = grid::ordered(&saved(&key), default)
+                .into_iter()
+                .map(|id| {
+                    let o = options[&id].clone();
+                    (id, o)
+                })
+                .collect();
+            let extra = (kind == Kind::Light && area.is_none()).then(|| {
+                let new = widgets::bar_button("list-add-symbolic", "New light group");
+                new.connect_clicked(|_| light_groups::create(None, Vec::new()));
+                new.upcast::<gtk::Widget>()
+            });
+            built.push((kind.key().into(), kind.title().into(), extra, ids));
         }
-        *self.tiles.borrow_mut() = tiles;
-        *self.sections.borrow_mut() = sections;
+        drop(devices);
+
+        let keys = Sections::order("rooms", built.iter().map(|b| b.0.clone()).collect());
+        let mut sorted = Vec::new();
+        for key in keys {
+            if let Some(i) = built.iter().position(|b| b.0 == key) {
+                sorted.push(built.remove(i));
+            }
+        }
+        let mut headings = Vec::new();
+        match &area {
+            // A room has too few devices to split by type: one grid, scenes
+            // first, then the types in the order All has them.
+            Some(room) => {
+                let key = format!("rooms:room:{room}");
+                let g = CardGrid::new(&key, maker.clone());
+                let all: Cards = sorted.into_iter().flat_map(|b| b.3).collect();
+                let options: BTreeMap<String, Vec<grid::Size>> = all.iter().cloned().collect();
+                let default: Vec<String> = all.into_iter().map(|(id, _)| id).collect();
+                for id in grid::ordered(&saved(&key), default) {
+                    cards::add_to(&g, &id, options[&id].clone());
+                }
+                g.update_property(&[gtk::accessible::Property::Label(room)]);
+                self.flow.add_plain(&key, &g);
+            }
+            None => {
+                for (key, title, extra, list) in sorted {
+                    let g = CardGrid::new(&format!("rooms:{key}"), maker.clone());
+                    for (id, options) in list {
+                        cards::add_to(&g, &id, options);
+                    }
+                    let heading = widgets::label("", "group-title");
+                    g.update_property(&[gtk::accessible::Property::Label(&title)]);
+                    self.flow.add(&key, &heading, extra.as_ref(), &g);
+                    headings.push((key, title, heading));
+                }
+            }
+        }
+        *self.headings.borrow_mut() = headings;
+        self.flow.set_arranging(self.arranging.get());
         self.filter(home);
     }
 
-    /// Show the tiles that match the area chip and the search.
+    /// Show the cards that match the search, and count them.
     fn filter(&self, home: &Home) {
         let query = self.query.borrow().clone();
-        let area = self.area.borrow().clone();
+        let devices = self.devices.borrow();
+        let by_id: BTreeMap<&str, &Device> = devices.iter().map(|d| (d.id.as_str(), d)).collect();
+        let headings = self.headings.borrow();
         let mut shown = 0;
-        for (name, heading, flows) in self.sections.borrow().iter() {
-            let in_area = area.as_ref().is_none_or(|a| a == name);
+        for (key, section, g) in self.flow.sections() {
             let mut count = 0;
-            let mut first_shown = true;
-            for flow in flows {
-                let mut in_flow = 0;
-                let mut child = flow.first_child();
-                while let Some(c) = child {
-                    child = c.next_sibling();
-                    let Some(c) = c.downcast_ref::<gtk::FlowBoxChild>() else {
-                        continue;
+            for id in g.ids() {
+                let matches = query.is_empty()
+                    || if let Some(room) = id.strip_prefix(cards::ROOM_LIGHTS) {
+                        room.to_lowercase().contains(&query) || "lights".contains(&query)
+                    } else if let Some(d) = by_id.get(id.as_str()) {
+                        d.matches(&query, &home.entities)
+                    } else {
+                        home.entities
+                            .get(&id)
+                            .is_some_and(|e| e.name().to_lowercase().contains(&query))
                     };
-                    let id = c.widget_name();
-                    let matches = in_area
-                        && (query.is_empty()
-                            || home.entities.get(id.as_str()).is_some_and(|e| {
-                                [
-                                    e.name(),
-                                    e.entity_id.clone(),
-                                    e.device_name.clone().unwrap_or_default(),
-                                    name.clone(),
-                                ]
-                                .iter()
-                                .any(|text| text.to_lowercase().contains(&query))
-                            }));
-                    c.set_visible(matches);
-                    in_flow += usize::from(matches);
-                }
-                flow.set_visible(in_flow > 0);
-                flow.set_margin_top(if in_flow > 0 && !first_shown { 12 } else { 0 });
-                first_shown &= in_flow == 0;
-                count += in_flow;
+                g.set_shown(&id, matches);
+                count += usize::from(matches);
             }
-            heading.set_text(&format!("{} · {count}", name.to_uppercase()));
-            heading.set_visible(count > 0);
+            if let Some((_, title, heading)) = headings.iter().find(|h| h.0 == key) {
+                heading.set_text(&format!("{} · {count}", title.to_uppercase()));
+            }
+            section.set_visible(count > 0);
             shown += count;
         }
+        self.flow.queue_resize();
         while let Some(child) = self.no_match.first_child() {
             self.no_match.remove(&child);
         }
@@ -329,14 +450,15 @@ impl Page {
             let (title, text) = if query.is_empty() {
                 (
                     "No devices here",
-                    "Turn on Show diagnostic and hidden entities to see everything Home Assistant has.".to_string(),
+                    "Turn on Show every device to include hidden ones and ones with only diagnostic entities."
+                        .to_string(),
                 )
             } else {
                 (
                     "No devices match",
                     format!(
-                        "Nothing matches “{}”. Search looks at names, devices and rooms.",
-                        gtk::glib::markup_escape_text(&query)
+                        "Nothing matches “{}”. Search looks at device names, their entities and rooms.",
+                        glib::markup_escape_text(&query)
                     ),
                 )
             };
