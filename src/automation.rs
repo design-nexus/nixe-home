@@ -211,6 +211,21 @@ pub struct DryRunReport {
     pub warnings: Vec<String>,
 }
 
+/// A validation error about one step: the message, then the step's ID in
+/// brackets, which editors turn into the step's name.
+fn at(id: &str, message: &str) -> String {
+    format!("{message} [{id}]")
+}
+
+/// Split an error from [`Workflow::validate`] into its message and the ID of
+/// the step it is about, if any.
+pub fn error_step(error: &str) -> (&str, Option<&str>) {
+    match error.strip_suffix(']').and_then(|e| e.rsplit_once(" [")) {
+        Some((message, id)) if valid_id(id) => (message, Some(id)),
+        _ => (error, None),
+    }
+}
+
 impl Workflow {
     pub fn validate(&self) -> Result<Vec<String>, String> {
         if self.schema_version != 1 {
@@ -228,16 +243,19 @@ impl Workflow {
         let mut trigger = None;
         for node in &self.nodes {
             if !valid_id(&node.id) || !ids.insert(node.id.as_str()) {
-                return Err("Node IDs must be unique and use letters, digits, _ or -".into());
+                return Err(at(
+                    &node.id,
+                    "Node IDs must be unique and use letters, digits, _ or -",
+                ));
             }
             match &node.kind {
                 NodeKind::Interval { seconds } if !(60..=86_400).contains(seconds) => {
-                    return Err("Interval must be 60–86400 seconds".into());
+                    return Err(at(&node.id, "Interval must be 60–86400 seconds"));
                 }
                 NodeKind::WindowOpened { class } | NodeKind::WindowClosed { class }
                     if class.trim().is_empty() || class.len() > 128 =>
                 {
-                    return Err("Window class is required".into());
+                    return Err(at(&node.id, "Window class is required"));
                 }
                 NodeKind::WaitWindowOpened {
                     class,
@@ -246,7 +264,10 @@ impl Workflow {
                     || class.len() > 128
                     || !(1..=3600).contains(timeout_seconds) =>
                 {
-                    return Err("Window wait needs a class and timeout of 1–3600 seconds".into());
+                    return Err(at(
+                        &node.id,
+                        "Window wait needs a class and timeout of 1–3600 seconds",
+                    ));
                 }
                 NodeKind::WaitEntityState {
                     entity_id,
@@ -257,18 +278,21 @@ impl Workflow {
                     || state.len() > 128
                     || !(1..=3600).contains(timeout_seconds) =>
                 {
-                    return Err("Entity wait needs a valid entity, state and timeout".into());
+                    return Err(at(
+                        &node.id,
+                        "Entity wait needs a valid entity, state and timeout",
+                    ));
                 }
                 NodeKind::Repeat { times } if !(1..=10).contains(times) => {
-                    return Err("Repeat count must be 1–10".into());
+                    return Err(at(&node.id, "Repeat count must be 1–10"));
                 }
                 NodeKind::AppRunning { class } | NodeKind::BranchAppRunning { class }
                     if class.trim().is_empty() || class.len() > 128 =>
                 {
-                    return Err("Application class is required".into());
+                    return Err(at(&node.id, "Application class is required"));
                 }
                 NodeKind::Delay { seconds } if !(1..=3600).contains(seconds) => {
-                    return Err("Delay must be 1–3600 seconds".into());
+                    return Err(at(&node.id, "Delay must be 1–3600 seconds"));
                 }
                 NodeKind::EntityState { entity_id, state }
                 | NodeKind::EntityIs { entity_id, state }
@@ -276,7 +300,7 @@ impl Workflow {
                         || state.trim().is_empty()
                         || state.len() > 128 =>
                 {
-                    return Err("Entity state needs a valid entity and value".into());
+                    return Err(at(&node.id, "Entity state needs a valid entity and value"));
                 }
                 NodeKind::SetEntity { entity_id, .. }
                     if !valid_entity_id(entity_id)
@@ -285,39 +309,43 @@ impl Workflow {
                             Some("light" | "switch" | "fan" | "input_boolean")
                         ) =>
                 {
-                    return Err("This entity does not support the selected on/off action".into());
+                    return Err(at(
+                        &node.id,
+                        "This entity does not support the selected on/off action",
+                    ));
                 }
                 NodeKind::ActivateScene { entity_id }
                     if !valid_entity_id(entity_id) || !entity_id.starts_with("scene.") =>
                 {
-                    return Err("A scene entity is required".into());
+                    return Err(at(&node.id, "A scene entity is required"));
                 }
                 NodeKind::Notify { title, body }
                     if title.trim().is_empty() || title.len() > 120 || body.len() > 1000 =>
                 {
-                    return Err("Notification title or body is too long".into());
+                    return Err(at(&node.id, "Notification title or body is too long"));
                 }
                 NodeKind::SwitchWorkspace { number } if !(1..=20).contains(number) => {
-                    return Err("Workspace must be 1–20".into());
+                    return Err(at(&node.id, "Workspace must be 1–20"));
                 }
                 NodeKind::SetVolume { percent } if *percent > 100 => {
-                    return Err("Volume must be 0–100".into());
+                    return Err(at(&node.id, "Volume must be 0–100"));
                 }
                 NodeKind::LaunchApplication { desktop_id } if !valid_desktop_id(desktop_id) => {
-                    return Err("Application must be a valid desktop file ID".into());
+                    return Err(at(&node.id, "Application must be a valid desktop file ID"));
                 }
                 NodeKind::SetVariable { name, value }
                 | NodeKind::VariableEquals { name, value }
                     if !valid_variable_name(name) || value.len() > 256 =>
                 {
-                    return Err(
-                        "Variable needs a valid name and value of at most 256 characters".into(),
-                    );
+                    return Err(at(
+                        &node.id,
+                        "Variable needs a valid name and value of at most 256 characters",
+                    ));
                 }
                 _ => {}
             }
             if node.kind.is_trigger() && trigger.replace(node.id.clone()).is_some() {
-                return Err("Only one trigger is supported".into());
+                return Err(at(&node.id, "Only one trigger is supported"));
             }
             kinds.insert(node.id.as_str(), &node.kind);
         }
@@ -369,15 +397,15 @@ impl Workflow {
                             .iter()
                             .any(|e| e.output.as_deref() == Some("false")) => {}
                 NodeKind::BranchAppRunning { .. } => {
-                    return Err("Branch needs true and false outputs".into());
+                    return Err(at(id, "Branch needs true and false outputs"));
                 }
                 NodeKind::Parallel
                     if outgoing.len() >= 2 && outgoing.iter().all(|e| e.output.is_none()) => {}
-                NodeKind::Parallel => return Err("Parallel needs at least two outputs".into()),
+                NodeKind::Parallel => return Err(at(id, "Parallel needs at least two outputs")),
                 NodeKind::Repeat { .. } if outgoing.len() == 1 && outgoing[0].output.is_none() => {}
-                NodeKind::Repeat { .. } => return Err("Repeat needs one child path".into()),
+                NodeKind::Repeat { .. } => return Err(at(id, "Repeat needs one child path")),
                 NodeKind::Stop if outgoing.is_empty() => {}
-                NodeKind::Stop => return Err("Stop cannot have outgoing edges".into()),
+                NodeKind::Stop => return Err(at(id, "Stop cannot have outgoing edges")),
                 _ if kind.is_action()
                     && outgoing.len() <= 2
                     && outgoing.iter().filter(|e| e.output.is_none()).count() <= 1
@@ -390,14 +418,19 @@ impl Workflow {
                         .iter()
                         .all(|e| e.output.is_none() || e.output.as_deref() == Some("error")) => {}
                 _ if outgoing.len() <= 1 && outgoing.iter().all(|e| e.output.is_none()) => {}
-                _ => return Err("Only branch or parallel nodes may have multiple outputs".into()),
+                _ => {
+                    return Err(at(
+                        id,
+                        "Only branch or parallel nodes may have multiple outputs",
+                    ));
+                }
             }
             if index == 0 {
                 continue;
             }
             if kind.is_condition() {
                 if self.owner == Owner::HomeAssistant && actions > 0 {
-                    return Err("Conditions must come before actions".into());
+                    return Err(at(id, "Conditions must come before actions"));
                 }
             } else if kind.is_action() {
                 actions += 1;
@@ -436,7 +469,7 @@ impl Workflow {
                 ),
             };
             if !allowed {
-                return Err("This node cannot run with the selected owner".into());
+                return Err(at(id, "This node cannot run with the selected owner"));
             }
         }
         if actions == 0 {

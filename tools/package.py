@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build/package one extracted Nyx app, preserving its installer/resource layout."""
+"""Build and package Home as a release archive with its installer and resources."""
 import argparse
 import gzip
 import hashlib
@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import platform
-import shutil
 import subprocess
 import tarfile
 
@@ -28,14 +27,6 @@ def main():
     spec = json.loads((ROOT / 'packaging.json').read_text())
     manifest = ROOT / spec['manifest']
     if not args.no_build:
-        # Optional cache supplies native runtime binaries, never application source.
-        if spec['application'] == 'pulse' and os.environ.get('NYX_NATIVE_CACHE'):
-            source = Path(os.environ['NYX_NATIVE_CACHE']) / 'ntgcalls'
-            destination = ROOT / 'target/native/ntgcalls'
-            for name in ['lib/libntgcalls.so', 'THIRD_PARTY_NOTICES.md']:
-                if (source / name).exists() and not (destination / name).exists():
-                    (destination / name).parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source / name, destination / name)
         for command in spec.get('prepare', []):
             run(*command)
         command = ['cargo', 'build', '--release', '--locked', '--manifest-path', str(manifest)]
@@ -62,26 +53,6 @@ def main():
         if not source.is_file():
             raise RuntimeError(f'Missing built binary {source}')
         resources['target/release/' + binary] = source
-    if spec['application'] == 'pulse':
-        for name in ['lib/libntgcalls.so', 'THIRD_PARTY_NOTICES.md']:
-            source = ROOT / 'target/native/ntgcalls' / name
-            if not source.is_file():
-                raise RuntimeError(f'Missing native runtime resource {source}')
-            resources['target/native/ntgcalls/' + name] = source
-    if spec['application'] == 'git':
-        run('env', 'NYX_SKIP_BUILD=1', 'bash', 'apps/git/packaging/build.sh')
-        (ROOT / 'dist').mkdir(exist_ok=True)
-        for source in (Path(metadata['target_directory']) / 'packages').glob('*.pkg.tar.zst'):
-            resources['dist/' + source.name] = source
-            shutil.copy2(source, ROOT / 'dist' / source.name)
-    if spec['application'] == 'assistant':
-        for name in list(resources):
-            if name.startswith('target/release/'):
-                resources['apps/assistant/' + name] = resources.pop(name)
-        for name in ['libonnxruntime_providers_cuda.so', 'libonnxruntime_providers_shared.so']:
-            source = Path(metadata['target_directory']) / 'release' / name
-            if source.exists():
-                resources['apps/assistant/target/release/' + name] = source
     revision = run('git', 'rev-parse', 'HEAD', capture=True)
     build_info = {'revision': revision, 'application': spec['application'],
                   'rustc': run('rustc', '--version', capture=True),

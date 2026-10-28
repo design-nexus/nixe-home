@@ -1,13 +1,23 @@
+mod activity;
+mod app;
+mod automations;
 mod builder;
 mod canvas;
-mod credentials;
-mod desktop_ui;
+mod connection;
+mod connections;
 mod ha;
 mod ha_automation;
 mod home_features;
+mod icons;
+mod overview;
 mod prefs;
+mod present;
+mod rooms;
+mod rt;
+mod service;
+mod settings;
 mod theme;
-mod window;
+mod tiles;
 
 use gtk::prelude::*;
 
@@ -19,7 +29,7 @@ fn main() -> gtk::glib::ExitCode {
         name: "Home",
     });
     let app = gtk::Application::builder().application_id(APP_ID).build();
-    app.connect_activate(window::present);
+    app.connect_activate(app::present);
     app.connect_shutdown(|_| prefs::flush());
     app.run()
 }

@@ -22,9 +22,24 @@ use zbus::interface;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+const SCHEMA: &str = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, trigger TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, status TEXT NOT NULL, detail TEXT NOT NULL); CREATE INDEX IF NOT EXISTS runs_recent ON runs(started_at DESC); CREATE INDEX IF NOT EXISTS runs_workflow ON runs(workflow_id, started_at); CREATE TABLE IF NOT EXISTS run_nodes (run_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(run_id,node_id)); CREATE TABLE IF NOT EXISTS event_receipts (workflow_id TEXT NOT NULL, event_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(workflow_id,event_id)); CREATE INDEX IF NOT EXISTS event_receipts_age ON event_receipts(received_at);";
+
+/// Runs a workflow may start per minute from its own triggers, so a workflow
+/// that triggers itself cannot loop without bound.
+const RUNS_PER_MINUTE: i64 = 20;
+
+/// How a run was started. Manual runs and live tests are asked for by the
+/// user, so they run disabled workflows and skip the loop limit.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Automatic,
+    Manual,
+}
+
 #[derive(Clone)]
 struct Engine {
     db: PathBuf,
+    workflows: Arc<Mutex<Option<Arc<Vec<Workflow>>>>>,
     running: Arc<Mutex<HashSet<String>>>,
     tasks: Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
     ha_online: Arc<AtomicBool>,
@@ -33,28 +48,43 @@ struct Engine {
 }
 
 impl Engine {
+    fn new(db: PathBuf) -> Result<Self> {
+        Connection::open(&db)?.execute_batch(SCHEMA)?;
+        Ok(Self {
+            db,
+            workflows: Arc::new(Mutex::new(None)),
+            running: Arc::new(Mutex::new(HashSet::new())),
+            tasks: Arc::new(Mutex::new(HashMap::new())),
+            ha_online: Arc::new(AtomicBool::new(false)),
+            home_events: broadcast::channel(256).0,
+            window_events: broadcast::channel(256).0,
+        })
+    }
+
     fn open(&self) -> Result<Connection> {
         let db = Connection::open(&self.db)?;
         db.busy_timeout(Duration::from_secs(3))?;
-        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, trigger TEXT NOT NULL, started_at INTEGER NOT NULL, finished_at INTEGER, status TEXT NOT NULL, detail TEXT NOT NULL); CREATE INDEX IF NOT EXISTS runs_recent ON runs(started_at DESC); CREATE TABLE IF NOT EXISTS run_nodes (run_id TEXT NOT NULL, node_id TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(run_id,node_id)); CREATE TABLE IF NOT EXISTS event_receipts (workflow_id TEXT NOT NULL, event_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(workflow_id,event_id)); CREATE INDEX IF NOT EXISTS event_receipts_age ON event_receipts(received_at);")?;
         Ok(db)
     }
 
-    fn list(&self) -> Result<Vec<Workflow>> {
+    /// Every saved workflow, parsed once and kept until one changes.
+    fn list(&self) -> Result<Arc<Vec<Workflow>>> {
+        if let Some(cached) = self.workflows.lock().unwrap().clone() {
+            return Ok(cached);
+        }
         let db = self.open()?;
         let mut stmt = db.prepare("SELECT json FROM workflows ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+        let workflows = Arc::new(
+            rows.map(|row| Ok(serde_json::from_str(&row?)?))
+                .collect::<Result<Vec<Workflow>>>()?,
+        );
+        *self.workflows.lock().unwrap() = Some(workflows.clone());
+        Ok(workflows)
     }
 
     fn get(&self, id: &str) -> Result<Option<Workflow>> {
-        let db = self.open()?;
-        let mut stmt = db.prepare("SELECT json FROM workflows WHERE id = ?1")?;
-        let mut rows = stmt.query([id])?;
-        match rows.next()? {
-            Some(row) => Ok(Some(serde_json::from_str(&row.get::<_, String>(0)?)?)),
-            None => Ok(None),
-        }
+        Ok(self.list()?.iter().find(|w| w.id == id).cloned())
     }
 
     fn save(&self, workflow: &Workflow) -> Result<()> {
@@ -64,12 +94,15 @@ impl Engine {
         let db = self.open()?;
         db.execute("INSERT INTO workflows(id,json,updated_at) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET json=excluded.json,updated_at=excluded.updated_at",
             params![workflow.id, serde_json::to_string(workflow)?, now()])?;
+        *self.workflows.lock().unwrap() = None;
         Ok(())
     }
 
     fn delete(&self, id: &str) -> Result<bool> {
         let db = self.open()?;
-        Ok(db.execute("DELETE FROM workflows WHERE id=?1", [id])? > 0)
+        let removed = db.execute("DELETE FROM workflows WHERE id=?1", [id])? > 0;
+        *self.workflows.lock().unwrap() = None;
+        Ok(removed)
     }
 
     fn history(&self, limit: u32) -> Result<String> {
@@ -99,32 +132,22 @@ impl Engine {
         }
     }
 
-    fn reserve_event(&self, workflow_id: &str, event_id: &str) -> Result<bool> {
-        let db = self.open()?;
-        db.execute(
-            "DELETE FROM event_receipts WHERE received_at<?1",
-            [now() - 7 * 24 * 3600],
-        )?;
-        Ok(db.execute("INSERT OR IGNORE INTO event_receipts(workflow_id,event_id,received_at) VALUES(?1,?2,?3)", params![workflow_id,event_id,now()])? == 1)
-    }
-
     fn ingest_event(&self, event: StateEvent) {
         let Ok(workflows) = self.list() else {
             return;
         };
         for workflow in workflows
-            .into_iter()
+            .iter()
             .filter(|w| w.enabled && w.owner == Owner::HybridDesktop)
         {
             if !workflow.nodes.iter().any(|n| matches!(&n.kind, NodeKind::EntityState { entity_id, state } if entity_id == &event.entity_id && state == &event.state)) { continue; }
-            match self.reserve_event(&workflow.id, &event.id) {
-                Ok(true) => {
-                    if let Err(e) = self.run(workflow, format!("home:{}", event.entity_id)) {
-                        warn!("hybrid event rejected: {e}");
-                    }
-                }
-                Ok(false) => {}
-                Err(e) => warn!("hybrid receipt unavailable: {e}"),
+            if let Err(e) = self.run(
+                workflow.clone(),
+                format!("home:{}", event.entity_id),
+                Start::Automatic,
+                Some(&event.id),
+            ) {
+                warn!("hybrid event rejected: {e}");
             }
         }
     }
@@ -145,11 +168,21 @@ impl Engine {
         Ok(true)
     }
 
-    fn run(&self, workflow: Workflow, trigger: String) -> Result<String> {
+    /// Start a run. `event` is the identity of the Home Assistant event that
+    /// triggered it: its receipt is written only once every other check has
+    /// passed, so an event is never consumed by a run that was refused. A
+    /// duplicate event returns `Ok(None)`.
+    fn run(
+        &self,
+        workflow: Workflow,
+        trigger: String,
+        start: Start,
+        event: Option<&str>,
+    ) -> Result<Option<String>> {
         if workflow.owner == Owner::HomeAssistant {
             return Err("Home Assistant owns this workflow".into());
         }
-        if !workflow.enabled {
+        if start == Start::Automatic && !workflow.enabled {
             return Err("Workflow is disabled".into());
         }
         workflow.validate()?;
@@ -159,36 +192,35 @@ impl Engine {
                 return Err("Workflow is already running".into());
             }
         }
-        let run_id = uuid::Uuid::new_v4().to_string();
-        let db = match self.open() {
-            Ok(db) => db,
-            Err(e) => {
-                self.running.lock().unwrap().remove(&workflow.id);
-                return Err(e);
-            }
-        };
-        if workflow.owner == Owner::HybridDesktop {
-            let recent: i64 = match db.query_row(
-                "SELECT count(*) FROM runs WHERE trigger LIKE 'home:%' AND started_at>?1",
-                [now() - 60],
-                |r| r.get(0),
-            ) {
-                Ok(value) => value,
-                Err(e) => {
-                    self.running.lock().unwrap().remove(&workflow.id);
-                    return Err(e.into());
-                }
-            };
-            if recent >= 20 {
-                self.running.lock().unwrap().remove(&workflow.id);
-                return Err("Hybrid event rate limit reached".into());
-            }
-        }
-        if let Err(e) = db.execute("INSERT INTO runs(id,workflow_id,trigger,started_at,status,detail) VALUES(?1,?2,?3,?4,'running','')",
-            params![run_id, workflow.id, trigger, now()]) {
+        let release = |e: Box<dyn std::error::Error + Send + Sync>| {
             self.running.lock().unwrap().remove(&workflow.id);
-            return Err(e.into());
+            e
+        };
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let db = self.open().map_err(release)?;
+        if start == Start::Automatic {
+            let recent: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM runs WHERE workflow_id=?1 AND started_at>?2",
+                    params![workflow.id, now() - 60],
+                    |r| r.get(0),
+                )
+                .map_err(|e| release(e.into()))?;
+            if recent >= RUNS_PER_MINUTE {
+                return Err(release(
+                    "Run limit reached: this workflow ran 20 times in the last minute".into(),
+                ));
+            }
         }
+        if let Some(event_id) = event
+            && !reserve_event(&db, &workflow.id, event_id).map_err(release)?
+        {
+            self.running.lock().unwrap().remove(&workflow.id);
+            return Ok(None);
+        }
+        db.execute("INSERT INTO runs(id,workflow_id,trigger,started_at,status,detail) VALUES(?1,?2,?3,?4,'running','')",
+            params![run_id, workflow.id, trigger, now()])
+            .map_err(|e| release(e.into()))?;
         let engine = self.clone();
         let returned_id = run_id.clone();
         let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
@@ -240,8 +272,19 @@ impl Engine {
             .unwrap()
             .insert(returned_id.clone(), task.abort_handle());
         let _ = start_tx.send(());
-        Ok(returned_id)
+        Ok(Some(returned_id))
     }
+}
+
+fn reserve_event(db: &Connection, workflow_id: &str, event_id: &str) -> Result<bool> {
+    db.execute(
+        "DELETE FROM event_receipts WHERE received_at<?1",
+        [now() - 7 * 24 * 3600],
+    )?;
+    Ok(db.execute(
+        "INSERT OR IGNORE INTO event_receipts(workflow_id,event_id,received_at) VALUES(?1,?2,?3)",
+        params![workflow_id, event_id, now()],
+    )? == 1)
 }
 
 fn run_path<'a>(
@@ -649,7 +692,7 @@ impl Service {
     }
     fn list_workflows(&self) -> zbus::fdo::Result<String> {
         let workflows = self.engine.list().map_err(dbus_error)?;
-        serde_json::to_string(&workflows).map_err(dbus_error)
+        serde_json::to_string(workflows.as_slice()).map_err(dbus_error)
     }
     fn save_workflow(&self, json: &str) -> zbus::fdo::Result<String> {
         let workflow: Workflow = serde_json::from_str(json).map_err(dbus_error)?;
@@ -680,14 +723,16 @@ impl Service {
             .map_err(dbus_error)?
             .ok_or_else(|| zbus::fdo::Error::Failed("Workflow not found".into()))?;
         self.engine
-            .run(workflow, "manual".into())
+            .run(workflow, "manual".into(), Start::Manual, None)
             .map_err(dbus_error)
+            .map(Option::unwrap_or_default)
     }
     fn run_draft_workflow(&self, json: &str) -> zbus::fdo::Result<String> {
         let workflow: Workflow = serde_json::from_str(json).map_err(dbus_error)?;
         self.engine
-            .run(workflow, "live_test".into())
+            .run(workflow, "live_test".into(), Start::Manual, None)
             .map_err(dbus_error)
+            .map(Option::unwrap_or_default)
     }
     fn history(&self, limit: u32) -> zbus::fdo::Result<String> {
         self.engine.history(limit).map_err(dbus_error)
@@ -712,7 +757,7 @@ async fn schedule(engine: Engine) {
         match engine.list() {
             Ok(workflows) => {
                 let mut active = HashSet::new();
-                for workflow in workflows {
+                for workflow in workflows.iter() {
                     if !workflow.enabled || workflow.owner == Owner::HomeAssistant {
                         continue;
                     }
@@ -726,7 +771,12 @@ async fn schedule(engine: Engine) {
                             .or_insert_with(std::time::Instant::now);
                         if at.elapsed() >= Duration::from_secs(seconds) {
                             *at = std::time::Instant::now();
-                            if let Err(e) = engine.run(workflow, "interval".into()) {
+                            if let Err(e) = engine.run(
+                                workflow.clone(),
+                                "interval".into(),
+                                Start::Automatic,
+                                None,
+                            ) {
                                 warn!("schedule: {e}");
                             }
                         }
@@ -755,9 +805,9 @@ async fn hypr_events(engine: Engine) {
                         };
                         let (kind, class) = match event {
                             "openwindow" => {
-                                let mut fields = data.split(',');
-                                let address = fields.next().unwrap_or("");
-                                let class = fields.next().unwrap_or("").to_string();
+                                let Some((address, class)) = open_window_class(data) else {
+                                    continue;
+                                };
                                 windows.insert(address.into(), class.clone());
                                 ("window_opened", class)
                             }
@@ -769,7 +819,7 @@ async fn hypr_events(engine: Engine) {
                         let _ = engine.window_events.send((kind.into(), class.clone()));
                         if let Ok(workflows) = engine.list() {
                             for workflow in workflows
-                                .into_iter()
+                                .iter()
                                 .filter(|w| w.enabled && w.owner != Owner::HomeAssistant)
                             {
                                 if workflow.nodes.iter().any(|n| match (&n.kind, kind) {
@@ -782,8 +832,13 @@ async fn hypr_events(engine: Engine) {
                                         "window_closed",
                                     ) => expected.eq_ignore_ascii_case(&class),
                                     _ => false,
-                                }) {
-                                    let _ = engine.run(workflow, kind.into());
+                                }) && let Err(e) = engine.run(
+                                    workflow.clone(),
+                                    kind.into(),
+                                    Start::Automatic,
+                                    None,
+                                ) {
+                                    warn!("{kind}: {e}");
                                 }
                             }
                         }
@@ -796,6 +851,19 @@ async fn hypr_events(engine: Engine) {
     }
 }
 
+/// The window address and class from an `openwindow` event's data:
+/// `ADDRESS,WORKSPACE,CLASS,TITLE`. The title may itself contain commas.
+fn open_window_class(data: &str) -> Option<(&str, String)> {
+    let mut fields = data.splitn(4, ',');
+    let address = fields.next()?;
+    let _workspace = fields.next()?;
+    let class = fields.next()?;
+    (!address.is_empty()).then(|| (address, class.to_string()))
+}
+
+/// The running Hyprland instance's event socket. A systemd user service may
+/// not inherit `HYPRLAND_INSTANCE_SIGNATURE`; then the most recently started
+/// instance is the live one, since older directories can outlive their compositor.
 fn hypr_event_socket() -> Option<PathBuf> {
     let base = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("hypr");
     if let Some(sig) = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE") {
@@ -807,8 +875,13 @@ fn hypr_event_socket() -> Option<PathBuf> {
     std::fs::read_dir(base)
         .ok()?
         .flatten()
-        .map(|entry| entry.path().join(".socket2.sock"))
-        .find(|path| path.exists())
+        .filter_map(|entry| {
+            let socket = entry.path().join(".socket2.sock");
+            let modified = std::fs::metadata(&socket).ok()?.modified().ok()?;
+            Some((modified, socket))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, socket)| socket)
 }
 
 async fn home_events(engine: Engine) {
@@ -874,14 +947,7 @@ async fn main() -> Result<()> {
     });
     let dir = nyx_core::paths::data_dir();
     std::fs::create_dir_all(&dir)?;
-    let engine = Engine {
-        db: dir.join("automation.db"),
-        running: Arc::new(Mutex::new(HashSet::new())),
-        tasks: Arc::new(Mutex::new(HashMap::new())),
-        ha_online: Arc::new(AtomicBool::new(false)),
-        home_events: broadcast::channel(256).0,
-        window_events: broadcast::channel(256).0,
-    };
+    let engine = Engine::new(dir.join("automation.db"))?;
     let db = engine.open()?;
     db.execute("UPDATE runs SET finished_at=?1,status='interrupted',detail='Service stopped during execution' WHERE status='running'", [now()])?;
     db.execute("UPDATE run_nodes SET status='interrupted',detail='Service stopped during execution' WHERE status='running'", [])?;
@@ -897,12 +963,12 @@ async fn main() -> Result<()> {
         .build()
         .await?;
     if let Ok(workflows) = engine.list() {
-        for workflow in workflows.into_iter().filter(|w| {
+        for workflow in workflows.iter().filter(|w| {
             w.enabled
                 && w.owner != Owner::HomeAssistant
                 && w.nodes.iter().any(|n| matches!(n.kind, NodeKind::Startup))
         }) {
-            if let Err(e) = engine.run(workflow, "startup".into()) {
+            if let Err(e) = engine.run(workflow.clone(), "startup".into(), Start::Automatic, None) {
                 warn!("startup: {e}");
             }
         }
@@ -921,23 +987,108 @@ async fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn temp_engine() -> (PathBuf, Engine) {
+        let path = std::env::temp_dir().join(format!("nyx-home-engine-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        let engine = Engine::new(path.join("automation.db")).unwrap();
+        (path, engine)
+    }
+
+    fn notify_workflow(enabled: bool) -> Workflow {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1, "id": "notify", "name": "Notify", "enabled": enabled,
+            "nodes": [
+                {"id": "trigger", "type": "manual"},
+                {"id": "wait", "type": "delay", "seconds": 3600},
+                {"id": "action", "type": "notify", "title": "Home", "body": "Ran"}
+            ],
+            "edges": [{"from": "trigger", "to": "wait"}, {"from": "wait", "to": "action"}]
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn event_receipts_survive_engine_recreation() {
-        let path =
-            std::env::temp_dir().join(format!("nyx-home-receipts-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&path).unwrap();
-        let db = path.join("automation.db");
-        let make_engine = || Engine {
-            db: db.clone(),
-            running: Arc::new(Mutex::new(HashSet::new())),
-            tasks: Arc::new(Mutex::new(HashMap::new())),
-            ha_online: Arc::new(AtomicBool::new(false)),
-            home_events: broadcast::channel(8).0,
-            window_events: broadcast::channel(8).0,
-        };
-        assert!(make_engine().reserve_event("workflow", "event-1").unwrap());
-        assert!(!make_engine().reserve_event("workflow", "event-1").unwrap());
-        assert!(make_engine().reserve_event("other", "event-1").unwrap());
+        let (path, engine) = temp_engine();
+        let open = || Engine::new(engine.db.clone()).unwrap().open().unwrap();
+        assert!(reserve_event(&open(), "workflow", "event-1").unwrap());
+        assert!(!reserve_event(&open(), "workflow", "event-1").unwrap());
+        assert!(reserve_event(&open(), "other", "event-1").unwrap());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn hyprland_open_events_report_the_window_class() {
+        assert_eq!(
+            open_window_class("5612e0a1b2c0,2,firefox,Nyx, Home - Mozilla Firefox"),
+            Some(("5612e0a1b2c0", "firefox".to_string()))
+        );
+        assert_eq!(open_window_class("5612e0a1b2c0,2"), None);
+    }
+
+    #[tokio::test]
+    async fn disabled_workflows_run_only_when_asked_for() {
+        let (path, engine) = temp_engine();
+        let workflow = notify_workflow(false);
+        assert!(
+            engine
+                .run(workflow.clone(), "interval".into(), Start::Automatic, None)
+                .is_err()
+        );
+        assert!(
+            engine
+                .run(workflow, "manual".into(), Start::Manual, None)
+                .unwrap()
+                .is_some()
+        );
+        std::fs::remove_dir_all(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_run_does_not_consume_its_event() {
+        let (path, engine) = temp_engine();
+        let workflow = notify_workflow(true);
+        engine.running.lock().unwrap().insert(workflow.id.clone());
+        assert!(
+            engine
+                .run(
+                    workflow.clone(),
+                    "home:light.office".into(),
+                    Start::Automatic,
+                    Some("event-1")
+                )
+                .is_err()
+        );
+        engine.running.lock().unwrap().clear();
+        assert!(
+            engine
+                .run(
+                    workflow.clone(),
+                    "home:light.office".into(),
+                    Start::Automatic,
+                    Some("event-1")
+                )
+                .unwrap()
+                .is_some()
+        );
+        engine
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .for_each(|t| t.abort());
+        engine.running.lock().unwrap().clear();
+        assert!(
+            engine
+                .run(
+                    workflow,
+                    "home:light.office".into(),
+                    Start::Automatic,
+                    Some("event-1")
+                )
+                .unwrap()
+                .is_none()
+        );
         std::fs::remove_dir_all(path).unwrap();
     }
 }

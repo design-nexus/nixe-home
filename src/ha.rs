@@ -4,7 +4,7 @@ use async_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc, sync::OnceLock, time::Duration};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -13,12 +13,20 @@ pub struct Entity {
     pub state: String,
     #[serde(default)]
     pub attributes: Value,
+    #[serde(default)]
+    pub last_changed: Option<String>,
     #[serde(skip)]
     pub area_name: Option<String>,
     #[serde(skip)]
     pub device_name: Option<String>,
     #[serde(skip)]
     pub device_id: Option<String>,
+    /// `config` or `diagnostic` for entities that aren't a device's main function.
+    #[serde(skip)]
+    pub entity_category: Option<String>,
+    /// Hidden by the user or an integration in Home Assistant.
+    #[serde(skip)]
+    pub hidden: bool,
 }
 
 impl Entity {
@@ -32,6 +40,13 @@ impl Entity {
     pub fn domain(&self) -> &str {
         self.entity_id.split_once('.').map(|v| v.0).unwrap_or("")
     }
+    fn apply(&mut self, meta: &Metadata) {
+        self.area_name = meta.area_name.clone();
+        self.device_name = meta.device_name.clone();
+        self.device_id = meta.device_id.clone();
+        self.entity_category = meta.entity_category.clone();
+        self.hidden = meta.hidden;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -39,16 +54,19 @@ pub enum Update {
     Connected(Inventory),
     Entity(Entity),
     Removed(String),
-    Status(String),
+    /// The live event stream is subscribed.
+    Online,
+    /// The live event stream dropped; it retries on its own.
+    Offline(String),
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct Inventory {
     pub entities: Vec<Entity>,
     pub areas: Vec<Area>,
-    pub area_count: usize,
     pub device_count: usize,
-    pub metadata: std::sync::Arc<HashMap<String, Metadata>>,
+    pub info: Info,
+    pub metadata: Arc<HashMap<String, Metadata>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -56,6 +74,8 @@ pub struct Metadata {
     pub area_name: Option<String>,
     pub device_name: Option<String>,
     pub device_id: Option<String>,
+    pub entity_category: Option<String>,
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -64,13 +84,89 @@ pub struct Area {
     pub name: String,
 }
 
+/// What Home Assistant says about itself (`/api/config`).
+#[derive(Debug, Clone, Default)]
+pub struct Info {
+    pub version: String,
+    pub location_name: String,
+}
+
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(12))
+            .connect_timeout(Duration::from_secs(6))
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+fn api(base: &str, path: &str) -> String {
+    format!("{}/api/{path}", base.trim_end_matches('/'))
+}
+
+fn http_error(status: reqwest::StatusCode) -> String {
+    match status.as_u16() {
+        401 => "Home Assistant rejected the token. Replace it in Connections.".into(),
+        403 => "This Home Assistant user isn't allowed to do that.".into(),
+        404 => "Home Assistant doesn't know that entity or action.".into(),
+        code => format!("Home Assistant returned an error (HTTP {code})."),
+    }
+}
+
+/// Why a connection check failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckError {
+    Unreachable,
+    Rejected,
+    Other(String),
+}
+
+impl std::fmt::Display for CheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreachable => f.write_str(
+                "Couldn't reach Home Assistant at that address. Check the URL and your network.",
+            ),
+            Self::Rejected => f.write_str(
+                "Home Assistant rejected this token. Create a new long-lived access token and paste it here.",
+            ),
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Check that `base` is a Home Assistant server that accepts `token`.
+pub async fn check(base: &str, token: &str) -> Result<Info, CheckError> {
+    let response = client()
+        .get(api(base, "config"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| CheckError::Unreachable)?;
+    match response.status().as_u16() {
+        200 => {}
+        401 | 403 => return Err(CheckError::Rejected),
+        _ => return Err(CheckError::Other(http_error(response.status()))),
+    }
+    let config: Value = response.json().await.map_err(|_| {
+        CheckError::Other("That address answered, but not like Home Assistant.".into())
+    })?;
+    if config["version"].as_str().is_none() {
+        return Err(CheckError::Other(
+            "That address answered, but not like Home Assistant.".into(),
+        ));
+    }
+    Ok(Info {
+        version: config["version"].as_str().unwrap_or_default().into(),
+        location_name: config["location_name"].as_str().unwrap_or_default().into(),
+    })
+}
+
 pub async fn fetch_states(base: &str, token: &str) -> Result<Vec<Entity>, String> {
-    let url = format!("{}/api/states", base.trim_end_matches('/'));
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|_| "Could not initialize the Home Assistant connection.".to_string())?
-        .get(url)
+    let response = client()
+        .get(api(base, "states"))
         .bearer_auth(token)
         .send()
         .await
@@ -78,10 +174,7 @@ pub async fn fetch_states(base: &str, token: &str) -> Result<Vec<Entity>, String
             "Could not reach Home Assistant. Check the URL and network connection.".to_string()
         })?;
     if !response.status().is_success() {
-        return Err(format!(
-            "Home Assistant returned HTTP {}.",
-            response.status()
-        ));
+        return Err(http_error(response.status()));
     }
     response
         .json::<Vec<Entity>>()
@@ -90,42 +183,45 @@ pub async fn fetch_states(base: &str, token: &str) -> Result<Vec<Entity>, String
 }
 
 pub async fn fetch_inventory(base: &str, token: &str) -> Result<Inventory, String> {
+    let info = check(base, token).await.map_err(|e| e.to_string())?;
     let mut entities = fetch_states(base, token).await?;
-    let registry = tokio::time::timeout(
-        std::time::Duration::from_secs(6),
-        fetch_registry(base, token),
-    )
-    .await;
+    let registry = tokio::time::timeout(Duration::from_secs(8), fetch_registry(base, token)).await;
     let (metadata, areas, device_count) = registry.ok().and_then(Result::ok).unwrap_or_default();
     for entity in &mut entities {
         if let Some(meta) = metadata.get(&entity.entity_id) {
-            entity.area_name = meta.area_name.clone();
-            entity.device_name = meta.device_name.clone();
-            entity.device_id = meta.device_id.clone();
+            entity.apply(meta);
         }
     }
     Ok(Inventory {
         entities,
-        area_count: areas.len(),
         areas,
         device_count,
-        metadata: std::sync::Arc::new(metadata),
+        info,
+        metadata: Arc::new(metadata),
     })
 }
 
-async fn fetch_registry(
-    base: &str,
-    token: &str,
-) -> Result<(HashMap<String, Metadata>, Vec<Area>, usize), String> {
-    let mut url = url::Url::parse(base).map_err(|_| "Invalid URL".to_string())?;
-    let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
+fn websocket_url(base: &str) -> Result<url::Url, String> {
+    let mut url =
+        url::Url::parse(base).map_err(|_| "Enter a valid Home Assistant URL.".to_string())?;
+    let scheme = match url.scheme() {
+        "http" | "ws" => "ws",
+        "https" | "wss" => "wss",
+        _ => return Err("Use an HTTP or HTTPS Home Assistant URL.".into()),
+    };
     url.set_scheme(scheme)
-        .map_err(|_| "Invalid URL".to_string())?;
+        .map_err(|_| "The Home Assistant URL is invalid.".to_string())?;
     url.set_path("/api/websocket");
-    let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
-        .await
-        .map_err(|_| "Registry unavailable".to_string())?;
-    read_json(&mut socket).await?; // auth_required
+    Ok(url)
+}
+
+async fn authenticate<S>(socket: &mut WebSocketStream<S>, token: &str) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if read_json(socket).await?["type"] != "auth_required" {
+        return Err("Home Assistant sent an unexpected WebSocket response.".into());
+    }
     socket
         .send(Message::Text(
             json!({"type":"auth","access_token":token})
@@ -133,11 +229,21 @@ async fn fetch_registry(
                 .into(),
         ))
         .await
-        .map_err(|_| "Registry unavailable".to_string())?;
-    let auth = read_json(&mut socket).await?;
-    if auth["type"] != "auth_ok" {
-        return Err("Registry authentication failed".into());
+        .map_err(|_| "Could not authenticate with Home Assistant.".to_string())?;
+    if read_json(socket).await?["type"] != "auth_ok" {
+        return Err("Home Assistant rejected the token. Replace it in Connections.".into());
     }
+    Ok(())
+}
+
+async fn fetch_registry(
+    base: &str,
+    token: &str,
+) -> Result<(HashMap<String, Metadata>, Vec<Area>, usize), String> {
+    let (mut socket, _) = tokio_tungstenite::connect_async(websocket_url(base)?.as_str())
+        .await
+        .map_err(|_| "Registry unavailable".to_string())?;
+    authenticate(&mut socket, token).await?;
     let areas = registry_call(&mut socket, 1, "config/area_registry/list")
         .await
         .unwrap_or_default();
@@ -158,7 +264,7 @@ async fn fetch_registry(
             });
         }
     }
-    area_list.sort_by(|a, b| a.name.cmp(&b.name));
+    area_list.sort_by_key(|a| a.name.to_lowercase());
     let mut device_data = HashMap::new();
     for device in devices.as_array().into_iter().flatten() {
         if let Some(id) = device["id"].as_str() {
@@ -192,6 +298,8 @@ async fn fetch_registry(
                 area_name: area_id.as_ref().and_then(|id| area_names.get(id)).cloned(),
                 device_name: device.and_then(|d| d.0.clone()),
                 device_id: item["device_id"].as_str().map(str::to_string),
+                entity_category: item["entity_category"].as_str().map(str::to_string),
+                hidden: !item["hidden_by"].is_null(),
             },
         );
     }
@@ -202,12 +310,12 @@ async fn read_json<S>(socket: &mut WebSocketStream<S>) -> Result<Value, String>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let message = socket
-        .next()
+    let message = tokio::time::timeout(Duration::from_secs(12), socket.next())
         .await
+        .map_err(|_| "Home Assistant stopped answering.".to_string())?
         .and_then(Result::ok)
         .and_then(|m| m.into_text().ok())
-        .ok_or_else(|| "WebSocket closed".to_string())?;
+        .ok_or_else(|| "Home Assistant closed the WebSocket connection.".to_string())?;
     serde_json::from_str(&message).map_err(|_| "Invalid WebSocket response".into())
 }
 
@@ -236,42 +344,52 @@ where
     }
 }
 
-pub async fn call_service(base: &str, token: &str, entity: &Entity) -> Result<(), String> {
-    let (domain, service) = match entity.domain() {
-        "light" | "switch" | "input_boolean" | "fan" => (
-            entity.domain(),
-            if entity.state == "on" {
-                "turn_off"
-            } else {
-                "turn_on"
-            },
-        ),
-        "lock" => (
-            "lock",
-            if entity.state == "locked" {
-                "unlock"
-            } else {
-                "lock"
-            },
-        ),
-        _ => return Err("This entity does not have a supported quick control.".into()),
+/// The actions the app may call, by domain. Anything else is refused before
+/// a request is made.
+pub fn allowed(domain: &str, service: &str) -> bool {
+    matches!(
+        (domain, service),
+        (
+            "light" | "switch" | "fan" | "input_boolean" | "automation" | "siren" | "humidifier",
+            "turn_on" | "turn_off"
+        ) | ("lock", "lock" | "unlock")
+            | ("cover", "open_cover" | "close_cover" | "stop_cover")
+            | ("climate", "set_temperature")
+            | ("media_player", "media_play_pause" | "volume_set")
+            | ("scene" | "script", "turn_on")
+            | ("button" | "input_button", "press")
+    )
+}
+
+/// Call a Home Assistant action on one entity, with extra service data.
+pub async fn call(
+    base: &str,
+    token: &str,
+    entity_id: &str,
+    service: &str,
+    data: Value,
+) -> Result<(), String> {
+    let domain = entity_id.split_once('.').map(|v| v.0).unwrap_or("");
+    if !allowed(domain, service) {
+        return Err("This device doesn't offer that control.".into());
+    }
+    let mut body = match data {
+        Value::Object(map) => map,
+        _ => Default::default(),
     };
-    let url = format!(
-        "{}/api/services/{domain}/{service}",
-        base.trim_end_matches('/')
-    );
-    let response = reqwest::Client::new()
-        .post(url)
+    body.insert("entity_id".into(), entity_id.into());
+    let response = client()
+        .post(api(base, &format!("services/{domain}/{service}")))
         .bearer_auth(token)
-        .json(&json!({"entity_id": entity.entity_id}))
+        .json(&body)
         .send()
         .await
-        .map_err(|_| "The Home Assistant service call failed.".to_string())?;
+        .map_err(|_| "Couldn't reach Home Assistant. The command wasn't sent.".to_string())?;
     response
         .status()
         .is_success()
         .then_some(())
-        .ok_or_else(|| format!("Home Assistant returned HTTP {}.", response.status()))
+        .ok_or_else(|| http_error(response.status()))
 }
 
 pub async fn call_robot_service(
@@ -293,15 +411,10 @@ pub async fn call_robot_service(
     } else {
         json!({"entity_id": entity.entity_id})
     };
-    let response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(12))
-        .build()
-        .map_err(|_| "Could not initialize the Home Assistant connection.".to_string())?
-        .post(format!(
-            "{}/api/services/{}/{}",
-            base.trim_end_matches('/'),
-            entity.domain(),
-            service
+    let response = client()
+        .post(api(
+            base,
+            &format!("services/{}/{service}", entity.domain()),
         ))
         .bearer_auth(token)
         .json(&body)
@@ -311,10 +424,7 @@ pub async fn call_robot_service(
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!(
-            "Home Assistant returned HTTP {}.",
-            response.status()
-        ))
+        Err(http_error(response.status()))
     }
 }
 
@@ -331,16 +441,10 @@ pub async fn fetch_entity_picture(
     if matches!(entity.state.as_str(), "unavailable" | "unknown" | "off") {
         return Err("This image is unavailable.".into());
     }
-    let mut response = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|_| "Could not initialize the Home Assistant connection.".to_string())?
-        .get(format!(
-            "{}/api/{endpoint}/{}",
-            base.trim_end_matches('/'),
-            entity.entity_id
-        ))
+    let mut response = client()
+        .get(api(base, &format!("{endpoint}/{}", entity.entity_id)))
         .bearer_auth(token)
+        .timeout(Duration::from_secs(15))
         .send()
         .await
         .map_err(|_| "Could not reach Home Assistant.".to_string())?;
@@ -376,46 +480,85 @@ pub async fn fetch_entity_picture(
     Ok(data)
 }
 
-pub fn start_live_updates(
+/// Follow Home Assistant's live state until the receiver goes away,
+/// reconnecting with a growing delay after each drop.
+pub async fn follow(
     base: String,
     token: String,
     sender: Sender<Update>,
-    cancel: async_channel::Receiver<()>,
-    metadata: std::sync::Arc<HashMap<String, Metadata>>,
+    metadata: Arc<HashMap<String, Metadata>>,
 ) {
-    std::thread::spawn(move || {
-        let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
+    let mut delay = 2;
+    loop {
+        let started = std::time::Instant::now();
+        let error = match websocket_loop(&base, &token, &sender, &metadata).await {
+            Ok(()) => return,
+            Err(message) => message,
         };
-        runtime.block_on(async move {
-            loop {
-                if cancel.is_closed() {
-                    return;
-                }
-                if sender
-                    .send(Update::Status("Connecting to Home Assistant…".into()))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                tokio::select! {
-                    _ = cancel.recv() => return,
-                    result = websocket_loop(&base, &token, &sender, &metadata) => match result {
-                        Ok(()) => {},
-                        Err(message) => { let _ = sender.send(Update::Status(message)).await; }
-                    }
-                }
-                tokio::select! {
-                    _ = cancel.recv() => return,
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(4)) => {}
-                }
-            }
-        });
-    });
+        if sender.send(Update::Offline(error)).await.is_err() {
+            return;
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            delay = 2;
+        }
+        tokio::time::sleep(Duration::from_secs(delay)).await;
+        delay = (delay * 2).min(30);
+    }
+}
+
+/// Returns `Ok` only when the receiver has gone away.
+async fn websocket_loop(
+    base: &str,
+    token: &str,
+    sender: &Sender<Update>,
+    metadata: &HashMap<String, Metadata>,
+) -> Result<(), String> {
+    let (mut socket, _) = tokio_tungstenite::connect_async(websocket_url(base)?.as_str())
+        .await
+        .map_err(|_| "Home Assistant is offline. Retrying…".to_string())?;
+    authenticate(&mut socket, token).await?;
+    socket
+        .send(Message::Text(
+            json!({"id":1,"type":"subscribe_events","event_type":"state_changed"})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .map_err(|_| "Could not subscribe to Home Assistant updates.".to_string())?;
+    if sender.send(Update::Online).await.is_err() {
+        return Ok(());
+    }
+    while let Some(message) = socket.next().await {
+        let message = message.map_err(|_| "Connection lost. Retrying…".to_string())?;
+        let Ok(text) = message.into_text() else {
+            continue;
+        };
+        let Some(update) = parse_update(&text, metadata) else {
+            continue;
+        };
+        if sender.send(update).await.is_err() {
+            return Ok(());
+        }
+    }
+    Err("Connection lost. Retrying…".into())
+}
+
+fn parse_update(text: &str, metadata: &HashMap<String, Metadata>) -> Option<Update> {
+    let value = serde_json::from_str::<Value>(text).ok()?;
+    if value["type"] != "event" {
+        return None;
+    }
+    let data = &value["event"]["data"];
+    if data["new_state"].is_null() {
+        return data["entity_id"]
+            .as_str()
+            .map(|id| Update::Removed(id.to_string()));
+    }
+    let mut entity = serde_json::from_value::<Entity>(data["new_state"].clone()).ok()?;
+    if let Some(meta) = metadata.get(&entity.entity_id) {
+        entity.apply(meta);
+    }
+    Some(Update::Entity(entity))
 }
 
 #[cfg(test)]
@@ -443,83 +586,166 @@ mod tests {
         assert_eq!(entity.name(), "sensor.temperature");
     }
 
-    #[tokio::test]
-    async fn fetch_states_accepts_a_mocked_home_assistant_response() {
-        use tokio::{
-            io::{AsyncReadExt, AsyncWriteExt},
-            net::TcpListener,
+    #[test]
+    fn live_updates_keep_registry_details() {
+        let metadata = HashMap::from([(
+            "image.vacuum_map".to_string(),
+            Metadata {
+                area_name: Some("Kitchen".into()),
+                device_name: Some("Robot".into()),
+                device_id: Some("device-1".into()),
+                entity_category: Some("diagnostic".into()),
+                hidden: true,
+            },
+        )]);
+        let event = json!({"type":"event","event":{"data":{
+            "entity_id":"image.vacuum_map",
+            "new_state":{"entity_id":"image.vacuum_map","state":"2026-10-27","attributes":{}}
+        }}})
+        .to_string();
+        let Some(Update::Entity(entity)) = parse_update(&event, &metadata) else {
+            panic!("expected an entity update");
         };
+        assert_eq!(entity.device_id.as_deref(), Some("device-1"));
+        assert_eq!(entity.entity_category.as_deref(), Some("diagnostic"));
+        assert!(entity.hidden);
+    }
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    #[test]
+    fn only_listed_actions_are_allowed() {
+        assert!(allowed("light", "turn_on"));
+        assert!(allowed("lock", "unlock"));
+        assert!(!allowed("lock", "turn_off"));
+        assert!(!allowed("shell_command", "turn_on"));
+    }
+
+    /// Answer one request with `status`, `kind` and `body`; resolve to the request.
+    async fn serve_once(
+        status: &'static str,
+        kind: &'static str,
+        body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut request = vec![0; 4096];
             let read = stream.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..read]);
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer test-token")
-            );
-            let body = r#"[{"entity_id":"light.office","state":"on","attributes":{"friendly_name":"Office lights"}}]"#;
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
+                "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
             );
             stream.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request[..read]).into_owned()
         });
-        let entities = fetch_states(&format!("http://{address}"), "test-token")
-            .await
-            .unwrap();
-        server.await.unwrap();
+        (format!("http://{address}"), server)
+    }
+
+    #[tokio::test]
+    async fn fetch_states_accepts_a_mocked_home_assistant_response() {
+        let (base, server) = serve_once(
+            "200 OK",
+            "application/json",
+            r#"[{"entity_id":"light.office","state":"on","attributes":{"friendly_name":"Office lights"}}]"#,
+        )
+        .await;
+        let entities = fetch_states(&base, "test-token").await.unwrap();
+        let request = server.await.unwrap();
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-token")
+        );
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].name(), "Office lights");
     }
 
     #[tokio::test]
+    async fn a_rejected_token_is_reported_as_rejected() {
+        let (base, server) = serve_once("401 Unauthorized", "text/plain", "").await;
+        assert_eq!(check(&base, "bad").await.unwrap_err(), CheckError::Rejected);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_reads_the_server_version() {
+        let (base, server) = serve_once(
+            "200 OK",
+            "application/json",
+            r#"{"version":"2026.10.1","location_name":"Home Lab"}"#,
+        )
+        .await;
+        let info = check(&base, "test-token").await.unwrap();
+        assert_eq!(info.version, "2026.10.1");
+        assert_eq!(info.location_name, "Home Lab");
+        assert!(server.await.unwrap().starts_with("GET /api/config "));
+    }
+
+    #[tokio::test]
     async fn camera_preview_uses_authenticated_proxy() {
-        use tokio::{
-            io::{AsyncReadExt, AsyncWriteExt},
-            net::TcpListener,
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0; 2048];
-            let read = stream.read(&mut request).await.unwrap();
-            let request = String::from_utf8_lossy(&request[..read]);
-            assert!(request.starts_with("GET /api/camera_proxy/camera.office "));
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer test-token")
-            );
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPNG!")
-                .await
-                .unwrap();
-        });
+        let (base, server) = serve_once("200 OK", "image/png", "PNG!").await;
         let camera: Entity = serde_json::from_value(json!({
             "entity_id":"camera.office","state":"idle","attributes":{}
         }))
         .unwrap();
-        let image = fetch_entity_picture(&format!("http://{address}"), "test-token", &camera)
+        let image = fetch_entity_picture(&base, "test-token", &camera)
             .await
             .unwrap();
-        server.await.unwrap();
+        let request = server.await.unwrap();
+        assert!(request.starts_with("GET /api/camera_proxy/camera.office "));
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-token")
+        );
         assert_eq!(image, b"PNG!");
     }
 
     #[tokio::test]
+    async fn service_calls_send_the_entity_and_its_data() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0; 2048];
+                let read = stream.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(14).any(|part| part == b"brightness_pct") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]")
+                .await
+                .unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        call(
+            &format!("http://{address}"),
+            "test-token",
+            "light.office",
+            "turn_on",
+            json!({"brightness_pct": 40}),
+        )
+        .await
+        .unwrap();
+        let request = server.await.unwrap();
+        assert!(request.starts_with("POST /api/services/light/turn_on "));
+        assert!(request.contains("\"entity_id\":\"light.office\""));
+        assert!(request.contains("\"brightness_pct\":40"));
+    }
+
+    #[tokio::test]
     async fn vacuum_area_control_uses_mapped_area_id() {
-        use tokio::{
-            io::{AsyncReadExt, AsyncWriteExt},
-            net::TcpListener,
-        };
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -566,116 +792,4 @@ mod tests {
         .unwrap();
         server.await.unwrap();
     }
-}
-
-async fn websocket_loop(
-    base: &str,
-    token: &str,
-    sender: &Sender<Update>,
-    metadata: &HashMap<String, Metadata>,
-) -> Result<(), String> {
-    let mut url =
-        url::Url::parse(base).map_err(|_| "Enter a valid Home Assistant URL.".to_string())?;
-    let scheme = match url.scheme() {
-        "http" => "ws",
-        "https" => "wss",
-        "ws" => "ws",
-        "wss" => "wss",
-        _ => return Err("Use an HTTP or HTTPS Home Assistant URL.".into()),
-    };
-    url.set_scheme(scheme)
-        .map_err(|_| "The Home Assistant URL is invalid.".to_string())?;
-    url.set_path("/api/websocket");
-    let (mut socket, _) = tokio_tungstenite::connect_async(url.as_str())
-        .await
-        .map_err(|_| "Home Assistant is offline. Retrying…".to_string())?;
-    let hello = socket
-        .next()
-        .await
-        .and_then(Result::ok)
-        .and_then(|m| m.into_text().ok())
-        .ok_or_else(|| "Home Assistant closed the WebSocket connection.".to_string())?;
-    if serde_json::from_str::<Value>(&hello)
-        .ok()
-        .and_then(|v| v["type"].as_str().map(str::to_owned))
-        .as_deref()
-        != Some("auth_required")
-    {
-        return Err("Home Assistant sent an unexpected WebSocket response.".into());
-    }
-    socket
-        .send(Message::Text(
-            json!({"type":"auth","access_token":token})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .map_err(|_| "Could not authenticate with Home Assistant.".to_string())?;
-    let auth = socket
-        .next()
-        .await
-        .and_then(Result::ok)
-        .and_then(|m| m.into_text().ok())
-        .ok_or_else(|| "Home Assistant closed the WebSocket connection.".to_string())?;
-    if serde_json::from_str::<Value>(&auth)
-        .ok()
-        .and_then(|v| v["type"].as_str().map(str::to_owned))
-        .as_deref()
-        != Some("auth_ok")
-    {
-        return Err(
-            "Home Assistant rejected the credential. Reconnect with a valid sign-in.".into(),
-        );
-    }
-    socket
-        .send(Message::Text(
-            json!({"id":1,"type":"subscribe_events","event_type":"state_changed"})
-                .to_string()
-                .into(),
-        ))
-        .await
-        .map_err(|_| "Could not subscribe to Home Assistant updates.".to_string())?;
-    let _ = sender
-        .send(Update::Status(
-            "Connected · listening for live updates".into(),
-        ))
-        .await;
-    while let Some(message) = socket.next().await {
-        let message = message.map_err(|_| "Connection lost. Retrying…".to_string())?;
-        let Ok(text) = message.into_text() else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<Value>(&text) else {
-            continue;
-        };
-        if value["type"] != "event" {
-            continue;
-        }
-        if value["event"]["data"]["new_state"].is_null() {
-            if let Some(entity_id) = value["event"]["data"]["entity_id"].as_str()
-                && sender
-                    .send(Update::Removed(entity_id.to_string()))
-                    .await
-                    .is_err()
-            {
-                return Ok(());
-            }
-            continue;
-        }
-        let Some(state) = value["event"]["data"]["new_state"].as_object() else {
-            continue;
-        };
-        let Ok(entity) = serde_json::from_value::<Entity>(Value::Object(state.clone())) else {
-            continue;
-        };
-        let mut entity = entity;
-        if let Some(meta) = metadata.get(&entity.entity_id) {
-            entity.area_name = meta.area_name.clone();
-            entity.device_name = meta.device_name.clone();
-        }
-        if sender.send(Update::Entity(entity)).await.is_err() {
-            return Ok(());
-        }
-    }
-    Err("Connection lost. Retrying…".into())
 }

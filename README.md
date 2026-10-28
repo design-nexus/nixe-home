@@ -1,8 +1,7 @@
 # Home
 
 Nyx Home is a native Linux frontend for an existing Home Assistant instance, with a
-separate desktop automation engine. Home Assistant remains
-the smart-home backend.
+separate desktop automation engine. Home Assistant remains the smart-home backend.
 
 ## Install
 
@@ -10,41 +9,105 @@ the smart-home backend.
 curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-home/main/install.sh | bash
 ```
 
-## Current functionality
+## What it does
 
-- Connect to Home Assistant with a long-lived access token.
-- Store the credential in the desktop Secret Service (through `secret-tool`), never
-  in the settings file.
-- Discover entities, areas, and devices; show live state changes and group entities
-  by area (with unassigned entities grouped by domain).
-- Pin devices to Overview and use basic controls for lights, switches, fans, input
-  booleans, and locks.
-- Run desktop automations from a systemd user service, independently of the window.
-- Build desktop or Home Assistant automations with a native WHEN → IF → THEN
-  editor. Add multiple actions, edit saved workflows, dry run, and live test.
-  Enable or disable workflows from the Automations page and review desktop run
-  results in Activity.
-- Store versioned desktop workflows and execution history in SQLite. Supported
-  triggers include manual, startup, intervals, and Hyprland window open/close;
-  actions include notifications, desktop application launch, workspace switching,
-  and volume.
-- Edit graphs on a native GTK canvas with palette drag and drop, pan, zoom,
-  multi-selection, grouping, copy/paste, undo/redo, keyboard shortcuts, and
-  node inspection. Desktop graphs can branch, run parallel paths, repeat, wait
-  for events, use variables, delay, and handle action failures. Dry and live
-  tests highlight nodes; live tests can be canceled.
-- Build desktop-owned hybrid automations that react to Home Assistant state
-  changes or invoke supported Home Assistant entity and scene actions.
-- View camera still previews on request, control vacuums and lawn mowers through
-  actions their entities support, clean mapped Home Assistant areas, and view
-  vacuum map image entities when available. See live energy and power sensors,
-  device health, and a reorderable Overview with hideable cards.
+- **Overview:** lights on, open doors and windows, who's home, the indoor
+  temperature and device health at a glance, your favorite devices as live
+  tiles, and cameras, robots and energy sensors when Home Assistant has them.
+- **Rooms:** every device grouped by Home Assistant area, with search and an
+  area filter. Tiles have the control that fits the device: a switch, a
+  brightness slider, target temperature, cover and media buttons, a two-click
+  unlock, robot commands, or a camera still.
+- **Automations:** desktop automations that run in a user service even with the
+  window closed, Home Assistant automations that run on your server, and hybrid
+  automations that connect the two. Build them with a simple When / Only if /
+  Then builder or on a canvas with branches, parallel paths, waits and retries.
+- **Activity:** what desktop and hybrid automations did, step by step.
+- **Connections:** the Home Assistant server and token, and the desktop service.
 
-Camera live video streams and vendor-specific robot commands are not available yet.
-Camera, robot, map, and energy controls appear when Home Assistant exposes the
-corresponding entities and capabilities.
-OAuth is deferred until the app has a registered website redirect. See
+The foot of the sidebar shows whether Home is connected (in the icon-only
+sidebar, just the colored dot; hover it for details) and opens Connections.
+Settings is the last button in the header.
+
+Camera live video and vendor-specific robot commands are not available yet. OAuth
+sign-in is deferred until the app has a registered website redirect; see
 [the architecture notes](docs/ARCHITECTURE.md).
+
+## Connect
+
+Open Home and choose **Connect…** (or press Ctrl+L). Enter the address you open
+Home Assistant with (for example `http://homeassistant.local:8123`) and a
+long-lived access token: in Home Assistant, open your profile, then **Security**,
+and create one. The dialog has a link that opens that page.
+
+Home checks the address and token with Home Assistant before it saves anything.
+The token goes to your desktop keyring (Secret Service, through `secret-tool`),
+never to a settings file. When a token is saved, the dialog says so; leave the
+field empty to keep it. If your keyring is locked when Home starts, unlock it and
+choose **Try again**. A token saved by the app under its former name, Nixe Home,
+is moved to the new name automatically.
+
+Use HTTPS when connecting over an untrusted network. Home Assistant keeps control
+of authentication and permissions.
+
+## Devices
+
+Open a tile's details with its **⋯** button, a right-click, or Shift+F10. From
+there, **Add to Overview** pins it as a favorite. Arrow keys move between tiles;
+Enter or Space uses the tile's main control. Rooms leaves out the diagnostic,
+configuration and hidden entities that Home Assistant keeps off its own
+dashboards; the eye button in the header (or **Settings → Rooms**) shows them.
+
+Choose the edit button on Overview to reorder or hide its sections. Camera stills
+and vacuum maps load only when you ask for them, come through Home Assistant's
+authenticated proxy, and are kept in memory, not on disk. Robot buttons appear
+only for commands the entity supports. Starting a mower asks for confirmation;
+area cleaning uses the areas mapped to the vacuum in Home Assistant.
+
+## Automations
+
+Press **New automation** (Ctrl+N) and choose where it runs:
+
+- **On this computer:** triggers are running it yourself, the desktop starting,
+  a schedule, or a Hyprland window opening or closing. Actions send
+  notifications, open apps, switch workspaces and set the volume.
+- **In Home Assistant:** an entity state change, an optional entity condition,
+  and on/off or scene actions. Home Assistant runs it and keeps its traces;
+  saving it requires an administrator token.
+- **Hybrid:** runs on this computer and reacts to or controls Home Assistant
+  devices. It's built on the canvas and never runs while the computer is off,
+  so keep home-critical behavior in Home Assistant.
+
+On the canvas, choose a step type and press **Add step**, or drag the button
+onto the canvas. Select a step to edit its fields in the inspector, then use
+**Connect next step…** (for a question step, **Connect “yes”…** and
+**Connect “no”…**) and click the step that follows. Actions can have a timeout,
+retries, and an error handler. **Dry run** walks through the steps without doing
+anything; **Live test** runs the draft once and shows each step's progress.
+Ctrl+S saves; Esc cancels a connection, clears the selection, or closes.
+
+The service runs as you, without root, and only performs these typed actions;
+there are no shell commands. Its data is in
+`~/.local/share/nyx-home/automation.db`. Check it with
+`systemctl --user status nyx-homed`; the app starts it on demand through D-Bus.
+
+`nyx-homectl` manages desktop workflows from a terminal: `list`, `save FILE`,
+`run ID`, `enable ID`, `disable ID`, `delete ID`, `history`, `status`, and
+`dry-run FILE [CONTEXT]`. An [example workflow](examples/manual-notification.json)
+can be imported with `nyx-homectl save examples/manual-notification.json`.
+
+## Keyboard
+
+| Keys | Does |
+| --- | --- |
+| Ctrl+1 … Ctrl+5 | Overview, Rooms, Automations, Activity, Connections |
+| Ctrl+F | Search devices |
+| Ctrl+N | New automation |
+| Ctrl+L | Connect to Home Assistant |
+| Ctrl+B | Collapse the sidebar |
+| Ctrl+, | Settings |
+| F5 | Refresh the page |
+| F1 or ? | All shortcuts (also in Settings → About) |
 
 ## Build and install
 
@@ -55,83 +118,21 @@ cargo build --release --locked
 ./install.sh
 ```
 
-This installs `nyx-home`, `nyx-homed`, `nyx-homectl`, a launcher entry, icon, and
-an enabled systemd user service under `~/.local`. It does not open the app. To run it, use `nyx-home` or select **Home** in
-the application launcher.
-
-## Home dashboard and devices
-
-Open **Overview → Customize** to reorder or hide dashboard sections. Star an
-entity in **Home** to pin it. **Home** also groups entities by area and shows
-camera, robot, energy, and device-health sections.
-
-Camera previews and vacuum maps load only when you click **Show preview** or
-**Show map**. Images come through Home Assistant's authenticated proxy and are
-kept in memory, not written to disk. Vacuum and mower buttons appear only when
-their Home Assistant entities report support for those actions. Starting a
-mower asks for confirmation. Area cleaning uses Home Assistant's mapped areas;
-configure the vacuum's area mapping in Home Assistant first. Energy values retain
-their sensor units and are not added across incompatible units.
-
-## Connect
-
-Open **Home** and choose **Connect Home Assistant**. Enter the base URL (for example
-`http://homeassistant.local:8123`) and a long-lived access token created in your
-Home Assistant profile. Nyx Home stores the token in Secret Service. If your keyring
-is locked or unavailable, unlock or enable it before connecting.
-
-Use HTTPS when connecting over an untrusted network. Home Assistant authentication
-and service permissions remain managed by Home Assistant.
-
-## Desktop automations
-
-The Automations page provides desktop and Home Assistant builders. Home Assistant
-automations currently support an entity state trigger, an optional entity state
-condition, and on/off or scene actions. Home Assistant executes these workflows;
-the desktop service keeps their editable Nyx graph but never runs them.
-
-The service also accepts versioned desktop workflow JSON through `nyx-homectl save FILE` for supported
-desktop triggers and actions. Use `nyx-homectl list`, `run ID`, `enable ID`,
-`disable ID`, `history`, `status`, and `dry-run FILE [CONTEXT]` to manage or inspect
-desktop workflows while the GUI is closed.
-An [example workflow](examples/manual-notification.json) can be imported with
-`nyx-homectl save examples/manual-notification.json`.
-The workflow file has `schema_version`, `id`, `name`, `enabled`, `nodes`, and `edges`.
-Each node has an `id` and a `type`; edges connect `from` to `to`. The simple builder supports
-one trigger, an optional condition, and a linear chain of actions. Workflow validation rejects
-unknown node types, unsafe application IDs, cycles, and disconnected nodes.
-Open **Canvas** on an automation to edit its graph. For a new graph, choose
-**Advanced canvas**. Select a node, use **Connect to node…**, then click the target.
-For a branch, the first connection is `true` and the second is `false`; remove
-an output in the inspector to rewire it. The inspector edits node parameters.
-Drag **Add node** into the canvas to place the selected node. Shift-click nodes
-to select several; drag them together, copy/paste with Ctrl+C/V, or group them
-in the inspector. Ctrl+Z/Y undo and redo; Delete removes selected nodes.
-Set action timeouts and permitted retries in the inspector. Connect an action's
-`error` output to a handler path. **Live test** runs the draft without saving it
-and shows node progress. Saved canvas positions and groups are editor metadata.
-
-Choose **Hybrid automation** for a new desktop-owned cross-system graph. A
-desktop trigger can turn a supported HA entity on or off or activate a scene;
-an HA entity state trigger can run desktop actions. Home Assistant-only graphs
-remain HA-owned. Hybrid HA events resume after reconnect, but events missed
-while the desktop is offline are not replayed. Keep home-critical behavior in
-Home Assistant. Secret Service supplies the daemon's credential; workflows
-never contain it. Activity records desktop and hybrid runs, including node
-results and retry details.
-
-The service runs as the current user with no root privileges. It only invokes
-allowlisted commands with separate arguments, enforces action timeouts, and records
-completion or failure. Desktop automation data is stored at
-`~/.local/share/nyx-home/automation.db`. Run `systemctl --user status nyx-homed`
-to inspect the service. Hyprland event triggers require an active Hyprland session.
+This installs `nyx-home`, `nyx-homed` and `nyx-homectl` under `~/.local/bin`, a
+launcher entry and icon, and the `nyx-homed` user service with D-Bus activation.
+An upgrade restarts the service but not an open window. `./uninstall.sh` removes
+them; `./uninstall.sh --purge` also removes settings, automations and the token.
 
 ## Development
 
 ```sh
 cargo check --locked
 cargo test --locked
+cargo run --example check_css   # GTK must accept the stylesheet (needs a display)
 ```
 
+`NYX_HOME_PAGE=rooms nyx-home` opens a page directly, and `NYX_HOME_OPEN=canvas`
+(or `builder`, `new`, `connect`, `settings`, `shortcuts`) opens a dialog at start.
 The app uses the pinned Nyx `nyx-core` and `nyx-design` crates. See
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries and current limitations.
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries and
+[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) for status and limits.

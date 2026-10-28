@@ -21,8 +21,8 @@ path = "src/bin/homectl.rs"
 
 [dependencies]
 nyx-core = { git = "https://github.com/design-nexus/nyx-core.git", rev = "52cba5e27a3dd5f00c780f53e423302b4b5f9c9c" }
-nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "938c638951a53f5874a8276d07ac9dcd68b191ad" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "938c638951a53f5874a8276d07ac9dcd68b191ad" }
+nyx-ui = { git = "https://github.com/design-nexus/nyx-design.git", rev = "b685e18f022265450b082cd887a6a52f2f9b1609" }
+nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "b685e18f022265450b082cd887a6a52f2f9b1609" }
 async-channel = "2"
 futures-util = "0.3"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
@@ -34,7 +34,7 @@ tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 petgraph = "0.8"
 rusqlite = { version = "0.40", features = ["bundled"] }
-zbus = "5"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,13 +1,275 @@
-window.home-window {
-  font-family: "Inter", "Cantarell", sans-serif;
-  font-size: 13px;
+/* Nyx Home on Nyx 2.0: everything from theme tokens; see nyx-design STYLE.md. */
+
+window.home-window .home-page {
+  padding: 16px 20px 28px;
 }
-window.home-window .technical { font-family: "JetBrains Mono", monospace; }
-window.home-window .home-sidebar { border-right: 1px solid @hairline; }
-window.home-window .home-nav { min-height: 38px; border-radius: 6px; margin: 2px 8px; }
-window.home-window .home-nav.active { background: @nav_active; color: @theme_accent; }
-window.home-window .home-content { padding: 20px; }
-window.home-window .home-card { border: 1px solid @hairline; border-radius: 10px; padding: 14px; }
-window.home-window .home-heading { font-size: 1.1em; font-weight: 600; }
-window.home-window .home-muted { color: @theme_dim_text; }
-window.home-window .home-error { color: @theme_danger; }
+
+window.home-window .group-head .group-title {
+  margin-bottom: 8px;
+}
+
+window.home-window .group-head {
+  margin-top: 6px;
+}
+
+window.home-window .dimmed {
+  opacity: 0.45;
+}
+
+/* ---------- Device tiles ---------- */
+
+window.home-window flowbox > flowboxchild {
+  padding: 0;
+  outline: none;
+  background: none;
+  border-radius: var(--nyx-radius-card);
+}
+
+window.home-window flowbox.tile-grid > flowboxchild:focus-visible {
+  outline: 2px solid alpha(@theme_accent, 0.8);
+  outline-offset: 1px;
+}
+
+window.home-window .tile {
+  min-width: 220px;
+  padding: 12px 10px 12px 14px;
+  background: @theme_card;
+  border-radius: var(--nyx-radius-card);
+  transition: background 120ms ease-out;
+}
+
+window.home-window .tile.on {
+  background: mix(@theme_card, @theme_accent, 0.1);
+}
+
+window.home-window .tile-icon {
+  -gtk-icon-size: 20px;
+  min-width: 34px;
+  min-height: 34px;
+  border-radius: 10px;
+  background: @field;
+  color: @theme_dim_text;
+}
+
+window.home-window .tile.on .tile-icon {
+  background: alpha(@theme_accent, 0.18);
+  color: @theme_accent;
+}
+
+window.home-window .tile.unavailable .tile-name,
+window.home-window .tile.unavailable .tile-icon {
+  opacity: 0.5;
+}
+
+window.home-window .tile.unavailable .tile-state {
+  color: @theme_warning;
+}
+
+window.home-window .tile-name {
+  font-weight: 500;
+}
+
+window.home-window .tile-state {
+  color: @theme_dim_text;
+  font-size: 0.92em;
+  font-feature-settings: "tnum";
+}
+
+window.home-window .tile-readout {
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+window.home-window .tile-more > button {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+window.home-window .tile-picture {
+  border-radius: var(--nyx-radius-small);
+  background: @field;
+}
+
+window.home-window .tile scale {
+  margin: 0 4px;
+}
+
+/* ---------- Overview ---------- */
+
+window.home-window .stat {
+  min-width: 150px;
+  padding: 14px 16px;
+}
+
+window.home-window .stat-icon {
+  color: @theme_dim_text;
+  margin-bottom: 4px;
+}
+
+window.home-window .stat-value {
+  font-size: 1.6em;
+  font-weight: 600;
+  font-feature-settings: "tnum";
+}
+
+window.home-window .stat-label {
+  color: @theme_dim_text;
+  font-size: 0.92em;
+}
+
+window.home-window .stat.warning .stat-icon,
+window.home-window .stat.warning .stat-value {
+  color: @theme_warning;
+}
+
+window.home-window .stat.success .stat-icon {
+  color: @theme_success;
+}
+
+window.home-window .hint-card {
+  padding: 14px 16px;
+}
+
+/* ---------- Rooms ---------- */
+
+window.home-window flowbox.area-chips {
+  margin-bottom: 4px;
+}
+
+window.home-window flowbox.area-chips > flowboxchild {
+  padding: 0;
+}
+
+window.home-window button.chip:checked {
+  background: @nav_active;
+  color: @theme_text;
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.5);
+}
+
+/* ---------- Lists ---------- */
+
+window.home-window .automation-row,
+window.home-window .run-row {
+  padding: 10px 14px;
+}
+
+window.home-window .row-icon {
+  -gtk-icon-size: 18px;
+  color: @theme_dim_text;
+}
+
+window.home-window .row-icon.success,
+window.home-window .success-text {
+  color: @theme_success;
+}
+
+window.home-window .row-icon.warning,
+window.home-window .warning-text {
+  color: @theme_warning;
+}
+
+window.home-window .row-icon.danger,
+window.home-window .error-text {
+  color: @theme_danger;
+}
+
+window.home-window .row-icon.accent {
+  color: @theme_accent;
+}
+
+window.home-window .tag.success {
+  background: alpha(@theme_success, 0.15);
+  color: @theme_success;
+}
+
+window.home-window .run-steps {
+  margin: 4px 0 2px 30px;
+  padding-left: 12px;
+  border-left: 2px solid @track;
+}
+
+window.home-window .card-actions {
+  margin-top: 10px;
+}
+
+window.home-window .choice-card {
+  padding: 14px 16px;
+}
+
+/* ---------- Connection at the sidebar's foot ---------- */
+
+window.home-window .settings-navigation button.sidebar-foot {
+  margin-top: 6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+window.home-window .settings-navigation .foot-title {
+  color: @theme_text;
+  font-weight: 500;
+}
+
+window.home-window .settings-navigation .foot-detail {
+  color: @theme_dim_text;
+  font-size: 0.885em;
+  font-feature-settings: "tnum";
+}
+
+window.home-window .status-dot {
+  color: @theme_text_tertiary;
+  font-size: 0.8em;
+  min-width: 17px;
+}
+
+window.home-window .status-dot.success {
+  color: @theme_success;
+}
+
+window.home-window .status-dot.warning {
+  color: @theme_warning;
+}
+
+window.home-window .status-dot.danger {
+  color: @theme_danger;
+}
+
+/* ---------- Dialogs ---------- */
+
+window.home-window .field-label {
+  font-weight: 500;
+  margin-top: 4px;
+}
+
+/* ---------- Canvas ---------- */
+
+window.home-window .canvas-toolbar {
+  padding: 6px 10px;
+}
+
+window.home-window .canvas-toolbar separator {
+  margin: 6px 4px;
+  background: @theme_divider;
+  min-width: 1px;
+}
+
+window.home-window .canvas-area {
+  background: @theme_bg;
+}
+
+window.home-window .canvas-inspector {
+  min-width: 288px;
+  padding: 12px 14px;
+  background: @theme_panel;
+}
+
+window.home-window .canvas-feedback {
+  padding: 6px 14px 8px;
+  color: @theme_dim_text;
+  font-size: 0.885em;
+}
+
+window.home-window .canvas-banner {
+  margin: 8px 10px 0;
+  padding: 8px 12px;
+}

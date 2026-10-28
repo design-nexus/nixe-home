@@ -3,14 +3,12 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    process::Stdio,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
-use tokio::process::Command;
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Clone)]
@@ -32,14 +30,19 @@ struct ConnectionPrefs {
     home_url: String,
 }
 
+fn saved_url() -> Result<String, String> {
+    let settings = std::fs::read_to_string(nyx_core::paths::prefs_file())
+        .map_err(|_| "Connect Home Assistant in Home first".to_string())?;
+    let prefs: ConnectionPrefs =
+        toml::from_str(&settings).map_err(|_| "Home settings could not be read".to_string())?;
+    Ok(prefs.home_url.trim_end_matches('/').into())
+}
+
 impl HybridClient {
     pub async fn load() -> Result<Self, String> {
-        let settings = std::fs::read_to_string(nyx_core::paths::prefs_file())
-            .map_err(|_| "Connect Home Assistant in Home first".to_string())?;
-        let prefs: ConnectionPrefs =
-            toml::from_str(&settings).map_err(|_| "Home settings could not be read".to_string())?;
-        let url = url::Url::parse(&prefs.home_url)
-            .map_err(|_| "Invalid Home Assistant URL".to_string())?;
+        let home_url = saved_url()?;
+        let url =
+            url::Url::parse(&home_url).map_err(|_| "Invalid Home Assistant URL".to_string())?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
             || !url.username().is_empty()
@@ -49,39 +52,17 @@ impl HybridClient {
         {
             return Err("Invalid Home Assistant URL".into());
         }
-        let output = tokio::time::timeout(
-            Duration::from_secs(6),
-            Command::new("secret-tool")
-                .args([
-                    "lookup",
-                    "service",
-                    "nyx-home",
-                    "account",
-                    "home-assistant",
-                ])
-                .stdin(Stdio::null())
-                .stderr(Stdio::null())
-                .output(),
-        )
+        let token = tokio::task::spawn_blocking(|| {
+            crate::credentials::load(Duration::from_secs(10)).map_err(|e| e.to_string())
+        })
         .await
-        .map_err(|_| "Secret Service timed out".to_string())?
-        .map_err(|_| "Secret Service is unavailable".to_string())?;
-        if !output.status.success() {
-            return Err("Home Assistant credential is unavailable".into());
-        }
-        let token = String::from_utf8(output.stdout)
-            .map_err(|_| "Invalid Home Assistant credential".to_string())?
-            .trim_end()
-            .to_owned();
-        if token.is_empty() {
-            return Err("Home Assistant credential is unavailable".into());
-        }
+        .map_err(|_| "Secret Service is unavailable".to_string())??;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(12))
             .build()
             .map_err(|_| "HTTP client unavailable".to_string())?;
         Ok(Self {
-            base: prefs.home_url.trim_end_matches('/').into(),
+            base: home_url,
             token,
             http,
         })
@@ -186,9 +167,9 @@ impl HybridClient {
         loop {
             let message = tokio::select! {
                 message = socket.next() => message,
-                _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                    match Self::load().await {
-                        Ok(current) if current.base == self.base && current.token == self.token => continue,
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
+                    match saved_url() {
+                        Ok(current) if current == self.base => continue,
                         _ => return Err("Home Assistant connection changed".into()),
                     }
                 }
@@ -236,8 +217,7 @@ pub fn parse_state_event(value: &Value) -> Option<StateEvent> {
     let data = &event["data"];
     let entity_id = data["entity_id"].as_str()?;
     let state = data["new_state"]["state"].as_str()?;
-    let old_state = data["old_state"]["state"].as_str()?;
-    if state == old_state {
+    if data["old_state"]["state"].as_str() == Some(state) {
         return None;
     }
     let fired = event["time_fired"].as_str()?;

@@ -171,6 +171,35 @@ References: [Home Assistant WebSocket API](https://contributors.home-assistant.i
   unavailable entities, low battery sensors, and available updates. No energy
   totals are inferred across mixed units or unrelated meters.
 
+## Phase 7 interface and runtime
+
+- **One I/O runtime.** The app keeps one multi-threaded Tokio runtime
+  (`rt.rs`). Home Assistant requests, D-Bus calls and keyring processes run on
+  it and hand results back to the GTK thread through `glib::spawn_future_local`.
+  No request blocks the GTK thread, and none starts its own thread or runtime.
+- **Desktop service calls.** `service.rs` keeps one session-bus connection and
+  typed calls for the `Automation1` interface. `zbus` uses Tokio in both the
+  app and the daemon; the daemon's method handlers run inside its runtime.
+- **Credentials.** `nyx_home::credentials` is shared by the app and the daemon,
+  so both look up the same keyring item. It distinguishes a missing token from
+  an unavailable keyring, waits up to two minutes for an unlock prompt, and
+  moves a token saved under the former `nixe-home` service to `nyx-home`. The
+  connect dialog checks the URL and token against `/api/config` before storing
+  anything, so a mistyped token never replaces a working one.
+- **State and rendering.** `app.rs` owns the Home Assistant state. Live events
+  update it and mark entities changed; a flush at most every 200 ms updates the
+  pages. Tiles (`tiles.rs`) update in place; a page's layout is rebuilt only
+  when entities appear or disappear, a tile's kind of control changes, or a
+  setting changes what is shown. Focus and scroll position survive updates.
+- **Presentation.** `present.rs` holds the GTK-free rules for friendly states,
+  icons, which control a device gets, Overview summaries, device health, and
+  readable descriptions of automations and runs. It is unit tested.
+- **Daemon.** Workflows are parsed once and cached until one is saved, deleted
+  or toggled. A run's checks (owner, enabled for automatic triggers, already
+  running, 20 automatic runs per workflow per minute) happen before an event
+  receipt is written. The hybrid link re-reads only the saved URL while
+  connected and loads the token again after a reconnect.
+
 References: [camera proxy](https://github.com/home-assistant/core/blob/dev/homeassistant/components/camera/__init__.py),
 [vacuum features](https://github.com/home-assistant/core/blob/dev/homeassistant/components/vacuum/const.py),
 [lawn mower features](https://github.com/home-assistant/core/blob/dev/homeassistant/components/lawn_mower/const.py),

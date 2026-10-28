@@ -1,9 +1,13 @@
 [Desktop Entry]
 Type=Application
 Name=Home
-Comment=Home Assistant and desktop automation
+GenericName=Smart home
+Comment=Control Home Assistant devices and automate your desktop
+Keywords=Home Assistant;smart home;lights;automation;devices;rooms;
+TryExec=nyx-home
 Exec=nyx-home
 Icon=io.github.design_nexus.nyx.Home
 Terminal=false
+StartupNotify=true
 Categories=Utility;Settings;
 StartupWMClass=io.github.design_nexus.nyx.Home

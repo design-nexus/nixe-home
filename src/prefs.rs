@@ -14,6 +14,8 @@ pub struct Prefs {
     pub favorite_entities: Vec<String>,
     pub dashboard_order: Vec<String>,
     pub dashboard_hidden: Vec<String>,
+    /// Rooms lists diagnostic, configuration and hidden entities too.
+    pub show_all_entities: bool,
 }
 
 impl Default for Prefs {
@@ -39,6 +41,7 @@ impl Default for Prefs {
             .map(str::to_string)
             .collect(),
             dashboard_hidden: Vec::new(),
+            show_all_entities: false,
         }
     }
 }

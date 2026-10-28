@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.design_nexus.nyx.Home.Automation
+Exec=@BINDIR@/nyx-homed
+SystemdService=nyx-homed.service

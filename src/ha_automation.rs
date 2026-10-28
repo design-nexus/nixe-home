@@ -26,6 +26,31 @@ pub async fn save(base: &str, token: &str, workflow: &Workflow) -> Result<(), St
     Ok(())
 }
 
+/// Remove the automation from Home Assistant. One that is already gone counts
+/// as removed.
+pub async fn delete(base: &str, token: &str, workflow_id: &str) -> Result<(), String> {
+    let response = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|_| "Could not initialize Home Assistant connection".to_string())?
+        .delete(format!(
+            "{}/api/config/automation/config/{workflow_id}",
+            base.trim_end_matches('/')
+        ))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| "Could not reach Home Assistant".to_string())?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(format!(
+            "Home Assistant didn't remove the automation (HTTP {}). Administrator access is required.",
+            response.status()
+        ))
+    }
+}
+
 pub async fn control(
     base: &str,
     token: &str,
