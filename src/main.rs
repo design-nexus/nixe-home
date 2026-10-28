@@ -28,7 +28,13 @@ fn main() -> gtk::glib::ExitCode {
         slug: "nyx-home",
         name: "Home",
     });
-    let app = gtk::Application::builder().application_id(APP_ID).build();
+    let mut builder = gtk::Application::builder().application_id(APP_ID);
+    // The developer aids open a separate copy instead of handing over to a
+    // Home that is already open.
+    if std::env::var_os("NYX_HOME_PAGE").is_some() || std::env::var_os("NYX_HOME_OPEN").is_some() {
+        builder = builder.flags(gtk::gio::ApplicationFlags::NON_UNIQUE);
+    }
+    let app = builder.build();
     app.connect_activate(app::present);
     app.connect_shutdown(|_| prefs::flush());
     app.run()

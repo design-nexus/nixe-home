@@ -158,7 +158,12 @@ impl Page {
                     Some(flow.upcast::<gtk::Widget>())
                 }
                 "favorites" => Some(self.favorites(home, &settings.favorite_entities)),
-                "cameras" => self.devices(home, |e| e.domain() == "camera"),
+                "cameras" => {
+                    let robots = present::robot_devices(home.entities.values());
+                    self.devices(home, |e| {
+                        e.domain() == "camera" && !present::is_robot_camera(e, &robots)
+                    })
+                }
                 "robots" => self.devices(home, |e| matches!(e.domain(), "vacuum" | "lawn_mower")),
                 "energy" | "health" => {
                     let list = widgets::vbox(0);

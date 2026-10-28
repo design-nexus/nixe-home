@@ -61,7 +61,10 @@ dashboards; the eye button in the header (or **Settings → Rooms**) shows them.
 Choose the edit button on Overview to reorder or hide its sections. Camera stills
 and vacuum maps load only when you ask for them, come through Home Assistant's
 authenticated proxy, and are kept in memory, not on disk. Robot buttons appear
-only for commands the entity supports. Starting a mower asks for confirmation;
+only for commands the entity supports. A vacuum or mower is one tile with its
+controls and map (a map image or camera on the same device, the current map
+first); its many settings entities appear only when showing everything, and its
+map and video stay out of the Cameras section. Starting a mower asks for confirmation;
 area cleaning uses the areas mapped to the vacuum in Home Assistant.
 
 ## Automations

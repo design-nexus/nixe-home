@@ -15,6 +15,16 @@ use std::{
 
 const OTHER: &str = "Other";
 
+/// Whether an entity gets a tile in Rooms. A robot is one tile with its
+/// controls and map; its other entities appear only when showing everything.
+fn shown(
+    e: &crate::ha::Entity,
+    show_all: bool,
+    robots: &std::collections::HashSet<String>,
+) -> bool {
+    present::listed(e, show_all) && (show_all || !present::is_robot_part(e, robots))
+}
+
 pub struct Page {
     pub root: gtk::Widget,
     pub actions: gtk::Box,
@@ -117,6 +127,7 @@ impl Page {
             self.show_all.set_active(show_all);
         }
         if let Some(ids) = changed {
+            let robots = present::robot_devices(home.entities.values());
             let tiles = self.tiles.borrow();
             let in_place = ids
                 .iter()
@@ -128,7 +139,7 @@ impl Page {
                         }
                         same
                     }
-                    (Some(entity), None) => !present::listed(entity, show_all),
+                    (Some(entity), None) => !shown(entity, show_all, &robots),
                     (None, _) => false,
                 });
             drop(tiles);
@@ -141,11 +152,12 @@ impl Page {
     }
 
     fn build(&self, home: &Home, show_all: bool) {
+        let robots = present::robot_devices(home.entities.values());
         let mut groups: BTreeMap<String, Vec<&crate::ha::Entity>> = BTreeMap::new();
         for entity in home
             .entities
             .values()
-            .filter(|e| present::listed(e, show_all))
+            .filter(|e| shown(e, show_all, &robots))
         {
             groups
                 .entry(entity.area_name.clone().unwrap_or_else(|| OTHER.into()))

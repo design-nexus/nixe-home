@@ -476,20 +476,8 @@ fn robot_controls(shared: &Rc<RefCell<Entity>>) -> gtk::Box {
         child = c.next_sibling();
     }
     column.append(&row);
-    if entity.domain() == "vacuum"
-        && let Some(map) = app::get().and_then(|app| {
-            app.home
-                .borrow()
-                .entities
-                .values()
-                .find(|c| {
-                    c.domain() == "image"
-                        && c.device_id.is_some()
-                        && c.device_id == entity.device_id
-                        && c.name().to_lowercase().contains("map")
-                })
-                .cloned()
-        })
+    if let Some(map) = app::get()
+        .and_then(|app| present::robot_map(&entity, app.home.borrow().entities.values()).cloned())
     {
         column.append(&picture(&Rc::new(RefCell::new(map)), "Show map"));
     }

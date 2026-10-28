@@ -55,6 +55,8 @@ pub fn short_name(e: &Entity) -> String {
     };
     let device = device.split_whitespace().collect::<Vec<_>>().join(" ");
     match name.strip_prefix(&device) {
+        // "Z60 Ultra Z60 Ultra": the device name twice is just the device.
+        Some(rest) if rest.trim() == device => device,
         Some(rest) if !rest.trim().is_empty() && rest.starts_with(' ') => sentence(rest.trim()),
         _ => name,
     }
@@ -65,7 +67,9 @@ pub fn tile_detail(e: &Entity) -> String {
     let state = state_text(e);
     let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     match e.device_name.as_deref() {
-        Some(device) if short_name(e) != words(&e.name()) => format!("{} · {state}", words(device)),
+        Some(device) if short_name(e) != words(&e.name()) && short_name(e) != words(device) => {
+            format!("{} · {state}", words(device))
+        }
         _ => state,
     }
 }
@@ -222,7 +226,8 @@ pub fn primary(e: &Entity) -> Primary {
         return Primary::None;
     }
     match e.domain() {
-        "light" | "switch" | "fan" | "input_boolean" | "automation" | "siren" | "humidifier" => {
+        // Sirens are left out: a mis-click shouldn't set one off.
+        "light" | "switch" | "fan" | "input_boolean" | "automation" | "humidifier" => {
             Primary::Toggle(e.state == "on")
         }
         "lock" => Primary::Lock {
@@ -334,6 +339,66 @@ pub fn listed(e: &Entity, show_all: bool) -> bool {
         return show_all && !matches!(e.domain(), "persistent_notification" | "zone");
     }
     show_all || (e.entity_category.is_none() && !e.hidden && e.domain() != "device_tracker")
+}
+
+/// The devices that are robots (vacuums and mowers).
+pub fn robot_devices<'a>(
+    entities: impl IntoIterator<Item = &'a Entity>,
+) -> std::collections::HashSet<String> {
+    entities
+        .into_iter()
+        .filter(|e| matches!(e.domain(), "vacuum" | "lawn_mower"))
+        .filter_map(|e| e.device_id.clone())
+        .collect()
+}
+
+/// A camera or image that belongs to a robot, such as its map or its own
+/// video. It is shown on the robot's tile, not with the home's cameras.
+pub fn is_robot_camera(e: &Entity, robots: &std::collections::HashSet<String>) -> bool {
+    matches!(e.domain(), "camera" | "image")
+        && e.device_id.as_ref().is_some_and(|id| robots.contains(id))
+}
+
+/// Any entity on a robot's device other than the robot itself: its map,
+/// sensors and dozens of settings. Rooms shows the robot as one tile.
+pub fn is_robot_part(e: &Entity, robots: &std::collections::HashSet<String>) -> bool {
+    !matches!(e.domain(), "vacuum" | "lawn_mower")
+        && e.device_id.as_ref().is_some_and(|id| robots.contains(id))
+}
+
+/// The map to show on a robot's tile: a map camera or image on the robot's
+/// device, the current map before saved or diagnostic ones.
+pub fn robot_map<'a>(
+    robot: &Entity,
+    entities: impl IntoIterator<Item = &'a Entity>,
+) -> Option<&'a Entity> {
+    let device = robot.device_id.as_ref()?;
+    entities
+        .into_iter()
+        .filter(|e| {
+            let name = e.name().to_lowercase();
+            matches!(e.domain(), "camera" | "image")
+                && e.device_id.as_ref() == Some(device)
+                && name.contains("map")
+                && !e.hidden
+                && !unavailable(e)
+                && ![
+                    "saved",
+                    "all maps",
+                    "diagnostic",
+                    "live path",
+                    "wifi",
+                    "data",
+                ]
+                .iter()
+                .any(|other| name.contains(other))
+        })
+        .min_by_key(|e| {
+            (
+                !e.name().to_lowercase().contains("current"),
+                e.entity_id.clone(),
+            )
+        })
 }
 
 /// What a tile is built from. When this changes, the tile is built again;
@@ -824,6 +889,77 @@ mod tests {
         lamp.device_name = Some("BR Lamp-L".into());
         assert_eq!(short_name(&lamp), "BR Lamp-L");
         assert_eq!(tile_detail(&lamp), "Off");
+        let mut vacuum = entity(
+            "vacuum.z60",
+            "docked",
+            json!({"friendly_name": "Z60 Ultra  Z60 Ultra"}),
+        );
+        vacuum.device_name = Some("Z60 Ultra".into());
+        assert_eq!(short_name(&vacuum), "Z60 Ultra");
+        assert_eq!(tile_detail(&vacuum), "Docked");
+    }
+
+    #[test]
+    fn robots_keep_their_maps_and_cameras() {
+        let on = |mut e: Entity, device: &str| {
+            e.device_id = Some(device.into());
+            e
+        };
+        let vacuum = on(entity("vacuum.z60", "docked", json!({})), "vac");
+        let current = on(
+            entity(
+                "camera.z60_map",
+                "2026-10-27",
+                json!({"friendly_name": "Z60 Current Map"}),
+            ),
+            "vac",
+        );
+        let saved = on(
+            entity(
+                "camera.z60_map_1",
+                "2026-10-27",
+                json!({"friendly_name": "Z60 Saved Map 1"}),
+            ),
+            "vac",
+        );
+        let doorbell = on(
+            entity(
+                "camera.doorbell",
+                "idle",
+                json!({"friendly_name": "Doorbell"}),
+            ),
+            "eufy",
+        );
+        let mower = on(entity("lawn_mower.lidax", "docked", json!({})), "mow");
+        let video = on(
+            entity(
+                "camera.lidax_live_video",
+                "unavailable",
+                json!({"friendly_name": "LiDAX Live Video"}),
+            ),
+            "mow",
+        );
+        let all = [
+            vacuum.clone(),
+            saved.clone(),
+            current.clone(),
+            doorbell.clone(),
+            mower,
+            video.clone(),
+        ];
+        assert_eq!(
+            robot_map(&vacuum, &all).map(|e| e.entity_id.as_str()),
+            Some("camera.z60_map")
+        );
+        let robots = robot_devices(&all);
+        assert!(is_robot_camera(&saved, &robots) && is_robot_camera(&video, &robots));
+        assert!(!is_robot_camera(&doorbell, &robots));
+        assert!(is_robot_part(&saved, &robots) && !is_robot_part(&vacuum, &robots));
+        assert!(!is_robot_part(&doorbell, &robots));
+        assert_eq!(
+            primary(&entity("siren.backyard", "off", json!({}))),
+            Primary::None
+        );
     }
 
     #[test]
