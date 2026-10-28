@@ -272,6 +272,9 @@ fn settings(device: &Device, home: &app::Home, title: &str) -> gtk::Box {
     if device.members.is_some() {
         list.append(&collapse_row(&device.id));
     }
+    if device.kind == device::Kind::Camera && !device.id.starts_with("entity:") {
+        list.append(&plugged_row(device, home));
+    }
     if let Some(entry) = device.group_entry(&home.entities) {
         let buttons = widgets::hbox(8);
         let edit = gtk::Button::with_label("Choose lights…");
@@ -332,6 +335,37 @@ fn update_registry(device_id: &str, changes: Value) {
             connection::reconnect();
         },
     );
+}
+
+/// "Plugged in" for a camera: live video then doesn't stop on its own, and
+/// its card says "Plugged in" instead of a battery level. Kept as a label in
+/// Home Assistant.
+fn plugged_row(device: &Device, home: &app::Home) -> gtk::Box {
+    let switch = gtk::Switch::new();
+    switch.set_valign(gtk::Align::Center);
+    switch.set_active(device.plugged);
+    switch.update_property(&[gtk::accessible::Property::Label("Plugged in")]);
+    let labels = home
+        .devices
+        .get(&device.id)
+        .map(|d| d.labels.clone())
+        .unwrap_or_default();
+    let id = device.id.clone();
+    switch.connect_active_notify(move |s| {
+        let (id, labels, on) = (id.clone(), labels.clone(), s.is_active());
+        app::ha_task(
+            move |base, token| async move { ha::set_plugged_in(&base, &token, &id, labels, on).await },
+            |()| {
+                app::toast("Saved.");
+                connection::reconnect();
+            },
+        );
+    });
+    widgets::row(
+        "Plugged in",
+        "Live video doesn't stop on its own, and the card shows power instead of a battery level",
+        Some(switch.upcast_ref()),
+    )
 }
 
 /// Rows for a group's lights, each with its own control.
@@ -449,6 +483,7 @@ fn open_scene(id: &str) {
             .hidden_devices
             .contains(&format!("entity:{id}")),
         grouped: false,
+        plugged: false,
     };
     let (dialog, card) = widgets::dialog(&device.name, 540);
     let about = format!(

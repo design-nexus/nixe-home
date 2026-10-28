@@ -467,7 +467,12 @@ fn camera(frame: &Frame, device: &Device, home: &Home, show_area: bool, size: Si
     let motion_chip = make("view-reveal-symbolic", "Motion");
     let person_chip = make("avatar-default-symbolic", "Person");
     let stream_chip = make("media-record-symbolic", "Live");
-    let battery_chip = make("battery-good-symbolic", "");
+    let plugged = device.plugged;
+    let battery_chip = if plugged {
+        make("ac-adapter-symbolic", "Plugged in")
+    } else {
+        make("battery-good-symbolic", "")
+    };
     let cam_id = cam.entity_id.clone();
     status(frame, device, show_area, move |home| {
         let on = |id: &Option<String>| {
@@ -484,8 +489,8 @@ fn camera(frame: &Frame, device: &Device, home: &Home, show_area: bool, size: Si
             .as_ref()
             .and_then(|id| entity(home, id))
             .and_then(|e| e.state.parse::<f64>().ok());
-        battery_chip.0.set_visible(level.is_some());
-        if let Some(level) = level {
+        battery_chip.0.set_visible(plugged || level.is_some());
+        if let Some(level) = level.filter(|_| !plugged) {
             battery_chip.1.set_text(&format!(
                 "{}%{}",
                 level.round(),
@@ -993,6 +998,7 @@ pub fn room_lights(
         members: Some(lights.to_vec()),
         hidden: false,
         grouped: false,
+        plugged: false,
     };
     let frame = frame(&device);
     frame.card.add_css_class("group-card");

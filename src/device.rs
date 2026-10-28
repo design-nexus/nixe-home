@@ -105,6 +105,8 @@ pub struct Device {
     pub hidden: bool,
     /// A light hidden because its group is set to hide its lights.
     pub grouped: bool,
+    /// Marked plugged in (the `plugged_in` label in Home Assistant).
+    pub plugged: bool,
 }
 
 impl Device {
@@ -368,6 +370,7 @@ pub fn group(
             members: primary.members(),
             hidden: false,
             grouped: false,
+            plugged: info.is_some_and(|i| i.labels.iter().any(|l| l == crate::ha::PLUGGED_IN)),
             id,
         });
     }

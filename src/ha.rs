@@ -102,6 +102,8 @@ pub struct DeviceInfo {
     pub model: Option<String>,
     /// `service` for integrations that aren't physical devices.
     pub entry_type: Option<String>,
+    /// Home Assistant label IDs (`plugged_in`).
+    pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -328,6 +330,13 @@ async fn fetch_registry(
                     manufacturer: device["manufacturer"].as_str().map(str::to_string),
                     model: device["model"].as_str().map(str::to_string),
                     entry_type: device["entry_type"].as_str().map(str::to_string),
+                    labels: device["labels"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect(),
                 },
             );
             device_data.insert(id.to_string(), (name, area_id));
@@ -522,6 +531,47 @@ pub async fn ws_command(base: &str, token: &str, mut command: Value) -> Result<V
             ),
         });
     }
+}
+
+/// The label Home puts on cameras that are plugged in.
+pub const PLUGGED_IN: &str = "plugged_in";
+
+/// Mark a device plugged in (or not) with a Home Assistant label, making the
+/// label first if it doesn't exist. `labels` are the device's labels now.
+pub async fn set_plugged_in(
+    base: &str,
+    token: &str,
+    device_id: &str,
+    labels: Vec<String>,
+    on: bool,
+) -> Result<(), String> {
+    if on {
+        let list = ws_command(base, token, json!({"type": "config/label_registry/list"})).await?;
+        let exists = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|l| l["label_id"] == PLUGGED_IN);
+        if !exists {
+            ws_command(
+                base,
+                token,
+                json!({"type": "config/label_registry/create", "name": "Plugged in", "icon": "mdi:power-plug"}),
+            )
+            .await?;
+        }
+    }
+    let mut labels: Vec<String> = labels.into_iter().filter(|l| l != PLUGGED_IN).collect();
+    if on {
+        labels.push(PLUGGED_IN.into());
+    }
+    ws_command(
+        base,
+        token,
+        json!({"type": "config/device_registry/update", "device_id": device_id, "labels": labels}),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// A live stream of a camera: Home Assistant's HLS playlist URL. The URL

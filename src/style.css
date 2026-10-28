@@ -600,8 +600,22 @@ window.home-window .robot-state {
 }
 
 /* Live video. */
-window.home-window togglebutton.live-toggle:checked {
-  background: alpha(@theme_danger, 0.2);
+/* The Live dot: grey when off, amber while the camera wakes, red once video
+   plays. GTK draws a toggle button as a "button" node. */
+window.home-window button.live-toggle image {
+  color: @theme_dim_text;
+}
+
+window.home-window button.live-toggle.waking image {
+  color: @theme_warning;
+}
+
+window.home-window button.live-toggle.streaming {
+  background: alpha(@theme_danger, 0.18);
+  color: @theme_danger;
+}
+
+window.home-window button.live-toggle.streaming image {
   color: @theme_danger;
 }
 

@@ -408,6 +408,21 @@ pub fn zoom_buttons(view: &Rc<MapView>, header: &gtk::Box) {
     actual.connect_clicked(move |_| v.actual());
 }
 
+/// The camera to stream for `camera`: its `<id>_live` twin when there is one.
+/// Some integrations (the Eufy bridge) give Home Assistant no stream; a
+/// Generic Camera on the bridge's RTSP stream, named like this, stands in.
+pub fn stream_of(
+    camera: &str,
+    entities: &std::collections::BTreeMap<String, ha::Entity>,
+) -> String {
+    let twin = format!("{camera}_live");
+    if entities.contains_key(&twin) {
+        twin
+    } else {
+        camera.to_string()
+    }
+}
+
 /// Whether Home Assistant can stream `entity` live.
 pub fn streams(entity: &ha::Entity) -> bool {
     entity.domain() == "camera"
@@ -429,12 +444,16 @@ const FIRST_FRAME_WITHIN: u32 = 30;
 /// the timers, which a newer start or stop makes stale.
 struct Live {
     camera: String,
+    /// What streams: the camera, or its `_live` twin (see [`stream_of`]).
+    stream: String,
     view: Rc<MapView>,
     toggle: gtk::ToggleButton,
     mute: gtk::ToggleButton,
     banner: gtk::Box,
     on: Cell<bool>,
     showing: Cell<bool>,
+    /// No "Still watching?" for a camera that's plugged in.
+    plugged: bool,
     /// Bumped on every start and stop, so old timers know they're stale.
     session: Cell<u32>,
     handlers: RefCell<Vec<glib::SignalHandlerId>>,
@@ -455,6 +474,7 @@ impl Live {
         self.mute.set_active(false);
         live::set_muted(true);
         self.view.note.set_text("Waking the camera…");
+        self.toggle.add_css_class("waking");
         self.view.note.set_visible(true);
         let paintable = live::paintable();
         let me = Rc::downgrade(self);
@@ -467,11 +487,13 @@ impl Live {
                 if !me.showing.replace(true) || size != me.view.size.get() {
                     me.view.show(p, size);
                 }
+                me.toggle.remove_css_class("waking");
+                me.toggle.add_css_class("streaming");
             }
         });
         self.handlers.borrow_mut().push(frame);
         let me = Rc::downgrade(self);
-        live::play(&self.camera, move |why| {
+        live::play(&self.stream, move |why| {
             if let Some(me) = me.upgrade() {
                 me.stop(Some(why));
             }
@@ -487,6 +509,9 @@ impl Live {
 
     /// Ask "Still watching?" after a while; stop if nobody answers.
     fn countdown(self: &Rc<Self>, session: u32) {
+        if self.plugged {
+            return;
+        }
         self.after(session, ASK_AFTER, move |me| {
             me.banner.set_visible(true);
             let asked = me.session.get();
@@ -526,13 +551,15 @@ impl Live {
             return;
         }
         self.session.set(self.session.get().wrapping_add(1));
-        live::stop(&self.camera);
+        live::stop(&self.stream);
         let paintable = live::paintable();
         for h in self.handlers.borrow_mut().drain(..) {
             paintable.disconnect(h);
         }
         self.banner.set_visible(false);
         self.mute.set_visible(false);
+        self.toggle.remove_css_class("waking");
+        self.toggle.remove_css_class("streaming");
         self.quiet.set(true);
         self.toggle.set_active(false);
         self.quiet.set(false);
@@ -574,6 +601,13 @@ fn open_with(entity_id: &str, title: &str, on_refresh: Option<OnRefresh>, start_
         .entities
         .get(entity_id)
         .is_some_and(streams);
+    // Plugged-in cameras don't need live video to stop to save a battery.
+    let plugged = app
+        .home
+        .borrow()
+        .device_list(true)
+        .iter()
+        .any(|d| d.plugged && d.entities.iter().any(|e| e == entity_id));
     let window = gtk::Window::builder()
         .title(title)
         .transient_for(&app.window)
@@ -640,12 +674,14 @@ fn open_with(entity_id: &str, title: &str, on_refresh: Option<OnRefresh>, start_
 
     let live_state = Rc::new(Live {
         camera: entity_id.to_string(),
+        stream: stream_of(entity_id, &app.home.borrow().entities),
         view: view.clone(),
         toggle: toggle.clone(),
         mute: mute.clone(),
         banner,
         on: Cell::new(false),
         showing: Cell::new(false),
+        plugged,
         session: Cell::new(0),
         handlers: RefCell::new(Vec::new()),
         on_refresh: on_refresh.clone(),

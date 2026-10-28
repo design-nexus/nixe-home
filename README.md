@@ -127,9 +127,17 @@ Cameras that Home Assistant can stream have a **Live** button (or L) in their
 viewer: the video plays muted (M for sound), and after three minutes Home asks
 "Still watching?" and stops unless you choose **Keep watching**, to save battery
 cameras. Closing the viewer stops it, and a fresh still replaces the old one.
-One camera plays at a time. Live video uses mpv's library (libmpv). Eufy
-cameras stream only with their **RTSP stream** setting on, which uses more
-battery.
+One camera plays at a time. Live video uses mpv's library (libmpv). The Live
+dot turns amber while the camera wakes and red once video plays. A camera
+marked **Plugged in** (in its details; kept as a "Plugged in" label in Home
+Assistant) never stops on its own, and its card shows power instead of a
+battery level.
+
+Some integrations give Home Assistant no stream of their own; the eufy-sdk
+bridge is one. Home then streams a stand-in: a Generic Camera on the bridge's
+RTSP stream (`rtsp://<home-assistant>:8554/<camera serial>`), named like the
+camera with `_live` added (`camera.driveway_live`) and hidden in Home
+Assistant. The camera's own RTSP setting can stay off.
 
 Choose the edit button on Overview to reorder or hide its sections. Camera stills
 and maps come from Home Assistant's last snapshot through its authenticated
