@@ -1,5 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <path fill="#7aa2f7" d="M7 29.2 32 8l25 21.2v26.3a2.5 2.5 0 0 1-2.5 2.5h-45A2.5 2.5 0 0 1 7 55.5z"/>
-  <path fill="#1a1b26" d="M25 36h14v22H25zM14 33l18-15 18 15v4L32 22 14 37z"/>
-  <path fill="none" stroke="#c0caf5" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m6 29 26-22 26 22"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#26262a"/><stop offset="1" stop-color="#121214"/></linearGradient>
+    <radialGradient id="glow" cx=".2" cy=".1" r=".9"><stop stop-color="#79e6ad" stop-opacity=".22"/><stop offset="1" stop-color="#79e6ad" stop-opacity="0"/></radialGradient>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#79e6ad"/><stop offset="1" stop-color="#3cc57f"/></linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#tile)"/>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#glow)"/>
+  <rect x="8.5" y="8.5" width="111" height="111" rx="27.5" fill="none" stroke="#79e6ad" stroke-opacity=".3"/>
+  <path d="M64 26l42 32-5 6-37-28-37 28-5-6z" fill="#79e6ad" fill-opacity=".35"/>
+  <path d="M64 40l30 23v29a6 6 0 0 1-6 6H40a6 6 0 0 1-6-6V63z" fill="url(#ink)"/>
+  <path d="M57 98V80h14v18" fill="none" stroke="#151517" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>
