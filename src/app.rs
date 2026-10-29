@@ -765,7 +765,7 @@ fn open_settings() {
     }
 }
 
-const SHORTCUTS: &[(&[&str], &str)] = &[
+pub const SHORTCUTS: &[(&[&str], &str)] = &[
     (
         &["Ctrl", "1–6"],
         "Go to Overview, Rooms, Cameras, Automations, Activity or Connections",
