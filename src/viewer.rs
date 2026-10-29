@@ -436,7 +436,6 @@ pub fn streams(entity: &ha::Entity) -> bool {
 
 /// How long live video plays before asking, and how long it waits for an
 /// answer or a first frame.
-const ASK_AFTER: u32 = 180;
 const ANSWER_WITHIN: u32 = 15;
 const FIRST_FRAME_WITHIN: u32 = 30;
 
@@ -509,10 +508,11 @@ impl Live {
 
     /// Ask "Still watching?" after a while; stop if nobody answers.
     fn countdown(self: &Rc<Self>, session: u32) {
-        if self.plugged {
+        let seconds = crate::prefs::get().camera_ask_seconds;
+        if self.plugged || seconds == 0 {
             return;
         }
-        self.after(session, ASK_AFTER, move |me| {
+        self.after(session, seconds.clamp(180, 1800), move |me| {
             me.banner.set_visible(true);
             let asked = me.session.get();
             me.after(asked, ANSWER_WITHIN, |me| {

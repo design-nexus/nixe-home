@@ -8,6 +8,7 @@ use nyx_ui::{
 
 const GROUPS: &[(&str, &str, &str)] = &[
     ("Rooms", "user-home-symbolic", "Which devices are listed"),
+    ("Cameras", "camera-video-symbolic", "Live video viewing timeout"),
     (
         "Home Assistant",
         "network-server-symbolic",
@@ -128,6 +129,11 @@ fn page() -> (gtk::Widget, gtk::Box) {
     rooms.append(&overview);
     hidden_devices(&rooms);
 
+    let cameras = group(&body, "Cameras");
+    let (row, _) = widgets::choice_row("Ask if still watching after", "For battery cameras. Takes effect when live video next starts.",
+        widgets::opts(&[("180", "3 minutes"), ("600", "10 minutes"), ("1800", "30 minutes"), ("0", "Never")]),
+        &prefs::get().camera_ask_seconds.to_string(), |id| prefs::update(|p| p.camera_ask_seconds = id.parse().unwrap_or(180)));
+    cameras.append(&row);
     let ha = group(&body, "Home Assistant");
     let base = app::get()
         .map(|a| a.home.borrow().base.clone())
